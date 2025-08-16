@@ -1,0 +1,2 @@
+# astrabot_plugin_self_learning
+一个AstrBot插件，可以给你的bot指定一个或多个学习对象，不间断的收集数据，通过类似于半监督学习的方式持续提高你的bot伪人的能力

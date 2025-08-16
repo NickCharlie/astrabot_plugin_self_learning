@@ -1,0 +1,99 @@
+# AstrBot 自学习插件完整依赖列表
+
+# 核心异步支持
+asyncio
+aiohttp
+aiofiles
+
+# 数据库支持
+pysqlite3
+sqlalchemy
+aiosqlite
+
+# 机器学习和数据分析
+numpy
+pandas
+scikit-learn
+scipy
+matplotlib
+seaborn
+plotly
+
+# 自然语言处理
+jieba
+textstat
+wordcloud
+nltk
+spacy
+
+# 深度学习（可选）
+torch
+transformers
+sentence-transformers
+
+# HTTP请求和API
+requests
+httpx
+
+# 配置文件处理
+pyyaml
+toml
+configparser
+
+# 数据验证和解析
+pydantic
+marshmallow
+
+# 时间和日期处理
+python-dateutil
+
+# 文件操作和压缩
+zipfile
+tarfile
+
+# 日志和监控
+loguru
+structlog
+
+# 缓存支持
+cachetools
+redis
+
+# 加密和安全
+cryptography
+hashlib
+
+# 图像处理（如果需要处理图片消息）
+pillow
+opencv-python
+
+# 数据可视化
+bokeh
+pygments
+
+# 网络工具
+urllib3
+certifi
+
+# 多线程和并发
+threading
+concurrent.futures
+multiprocessing
+
+# 系统监控
+psutil
+
+# 测试框架
+pytest
+pytest-asyncio
+
+# 开发工具
+black
+flake8
+mypy
+
+# 其他实用工具
+click
+tqdm
+rich
+typer

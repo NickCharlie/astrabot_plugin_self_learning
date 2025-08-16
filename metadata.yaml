@@ -1,0 +1,39 @@
+name: "astrbot_plugin_self_learning"
+author: "NickMo"
+description: "智能自学习对话插件 - 通过学习用户对话自动优化机器人人格和对话风格"
+version: "1.0.0"
+repo: "https://github.com/NickCharlie/astrabot_plugin_self_learning"
+tags:
+  - "自学习"
+  - "对话风格"
+  - "人格优化"
+  - "AI学习"
+  - "智能分析"
+homepage: ""
+license: "MIT"
+compatibility:
+  min_astrbot_version: "3.4.0"
+platforms:
+  - "aiocqhttp" 
+  - "qq"
+  - "qq_official"
+  - "telegram"
+features:
+  - "智能消息抓取和筛选"
+  - "双层LLM模型分析（弱模型筛选 + 强模型提炼）"
+  - "自动人格和对话风格优化"
+  - "可配置QQ号目标列表"
+  - "定时和实时学习模式"
+  - "Web管理界面支持"
+  - "学习数据导出和备份"
+  - "详细的学习统计和监控"
+keywords:
+  - 模仿
+  - 学习
+  - 伪人
+  - learning
+  - ai
+  - persona
+  - style
+  - analysis
+  - conversation

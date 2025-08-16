@@ -1,0 +1,241 @@
+{
+  "Self_Learning_Basic": {
+    "description": "基础学习设置",
+    "type": "object",
+    "hint": "控制插件的基本学习行为",
+    "items": {
+      "enable_message_capture": {
+        "description": "启用消息抓取",
+        "type": "bool",
+        "hint": "是否抓取用户消息用于学习。关闭后插件将停止收集新消息",
+        "default": true
+      },
+      "enable_auto_learning": {
+        "description": "启用自动学习",
+        "type": "bool", 
+        "hint": "是否启用定时自动学习。关闭后需要手动触发学习",
+        "default": true
+      },
+      "enable_realtime_learning": {
+        "description": "启用实时学习",
+        "type": "bool",
+        "hint": "是否在收到消息时立即进行筛选处理。会增加实时负载",
+        "default": false
+      },
+      "enable_web_interface": {
+        "description": "启用Web管理界面", 
+        "type": "bool",
+        "hint": "是否启用Web界面用于查看和管理学习数据",
+        "default": false
+      }
+    }
+  },
+  "Target_Settings": {
+    "description": "抓取目标设置",
+    "type": "object", 
+    "hint": "配置要学习哪些用户的消息",
+    "items": {
+      "target_qq_list": {
+        "description": "目标QQ号列表",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "指定要学习的QQ号列表。为空则学习所有用户消息。支持群号和个人QQ号",
+        "default": []
+      },
+      "current_persona_name": {
+        "description": "当前目标人格",
+        "type": "string",
+        "hint": "插件将学习并优化此人格的对话风格。需要在人格设置中存在",
+        "default": "default"
+      }
+    }
+  },
+  "Model_Configuration": {
+    "description": "模型配置",
+    "type": "object",
+    "hint": "配置用于筛选和提炼的AI模型",
+    "items": {
+      "filter_model_name": {
+        "description": "筛选模型名称",
+        "type": "string", 
+        "hint": "用于初步筛选消息的弱模型。建议使用速度快、成本低的模型如gpt-4o-mini",
+        "default": "gpt-4o-mini"
+      },
+      "refine_model_name": {
+        "description": "提炼模型名称",
+        "type": "string",
+        "hint": "用于深度分析和提炼对话风格的强模型。建议使用能力强的模型如gpt-4o",
+        "default": "gpt-4o"
+      }
+    }
+  },
+  "Learning_Parameters": {
+    "description": "学习参数",
+    "type": "object",
+    "hint": "控制学习过程的各种参数",
+    "items": {
+      "learning_interval_hours": {
+        "description": "学习间隔(小时)",
+        "type": "int",
+        "hint": "自动学习的时间间隔，单位为小时",
+        "default": 6
+      },
+      "min_messages_for_learning": {
+        "description": "最少学习消息数量",
+        "type": "int", 
+        "hint": "开始学习所需的最少消息数量",
+        "default": 50
+      },
+      "max_messages_per_batch": {
+        "description": "每批处理的最大消息数量",
+        "type": "int",
+        "hint": "单次学习处理的最大消息数量，避免一次处理过多消息",
+        "default": 200
+      }
+    }
+  },
+  "Filter_Parameters": {
+    "description": "筛选参数",
+    "type": "object",
+    "hint": "控制消息筛选的参数",
+    "items": {
+      "message_min_length": {
+        "description": "消息最小长度",
+        "type": "int",
+        "hint": "参与学习的消息最小字符长度",
+        "default": 5
+      },
+      "message_max_length": {
+        "description": "消息最大长度", 
+        "type": "int",
+        "hint": "参与学习的消息最大字符长度",
+        "default": 500
+      },
+      "confidence_threshold": {
+        "description": "筛选置信度阈值",
+        "type": "float",
+        "hint": "消息筛选的置信度阈值，0-1之间，越高越严格",
+        "default": 0.7
+      }
+    }
+  },
+  "Style_Analysis": {
+    "description": "风格分析参数",
+    "type": "object",
+    "hint": "控制对话风格分析的参数",
+    "items": {
+      "style_analysis_batch_size": {
+        "description": "风格分析批次大小",
+        "type": "int",
+        "hint": "单次风格分析处理的消息数量",
+        "default": 100
+      },
+      "style_update_threshold": {
+        "description": "风格更新阈值",
+        "type": "float", 
+        "hint": "触发人格风格更新的置信度阈值，0-1之间",
+        "default": 0.8
+      }
+    }
+  },
+  "Advanced_Settings": {
+    "description": "高级设置",
+    "type": "object",
+    "hint": "高级用户配置选项",
+    "items": {
+      "debug_mode": {
+        "description": "调试模式",
+        "type": "bool",
+        "hint": "启用详细的调试日志输出",
+        "default": false
+      },
+      "save_raw_messages": {
+        "description": "保存原始消息",
+        "type": "bool",
+        "hint": "是否保存未经处理的原始消息用于分析",
+        "default": true
+      },
+      "auto_backup_interval_days": {
+        "description": "自动备份间隔(天)",
+        "type": "int",
+        "hint": "学习数据自动备份的间隔天数，0为禁用",
+        "default": 7
+      }
+    }
+  },
+  "Machine_Learning_Settings": {
+    "description": "机器学习设置",
+    "type": "object",
+    "hint": "轻量级机器学习分析配置",
+    "items": {
+      "enable_ml_analysis": {
+        "description": "启用ML分析",
+        "type": "bool",
+        "hint": "是否启用scikit-learn进行文本聚类和行为分析",
+        "default": true
+      },
+      "max_ml_sample_size": {
+        "description": "ML样本最大数量",
+        "type": "int",
+        "hint": "机器学习分析的最大样本数量，控制资源使用",
+        "default": 100
+      },
+      "ml_cache_timeout_hours": {
+        "description": "ML缓存超时(小时)",
+        "type": "int",
+        "hint": "机器学习分析结果的缓存时间",
+        "default": 1
+      }
+    }
+  },
+  "Intelligent_Reply_Settings": {
+    "description": "智能回复设置", 
+    "type": "object",
+    "hint": "基于用户画像的智能回复配置",
+    "items": {
+      "enable_intelligent_reply": {
+        "description": "启用智能回复",
+        "type": "bool",
+        "hint": "是否启用基于用户画像的智能回复功能",
+        "default": false
+      },
+      "reply_probability": {
+        "description": "回复概率",
+        "type": "float",
+        "hint": "智能回复的触发概率，0-1之间",
+        "default": 0.1
+      },
+      "context_window_size": {
+        "description": "上下文窗口大小",
+        "type": "int",
+        "hint": "构建回复时考虑的历史消息数量",
+        "default": 5
+      }
+    }
+  },
+  "Persona_Backup_Settings": {
+    "description": "人格备份设置",
+    "type": "object",
+    "hint": "人格数据备份和恢复配置",
+    "items": {
+      "auto_backup_enabled": {
+        "description": "启用自动备份",
+        "type": "bool",
+        "hint": "是否在人格更新前自动创建备份",
+        "default": true
+      },
+      "backup_interval_hours": {
+        "description": "备份间隔(小时)",
+        "type": "int",
+        "hint": "自动备份的时间间隔",
+        "default": 24
+      },
+      "max_backups_per_group": {
+        "description": "每群最大备份数",
+        "type": "int",
+        "hint": "每个群保留的最大备份数量",
+        "default": 10
+      }
+    }
+  }
+}

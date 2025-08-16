@@ -1,0 +1,43 @@
+"""
+自学习插件异常定义
+"""
+
+
+class SelfLearningError(Exception):
+    """自学习插件基础异常类"""
+    pass
+
+
+class ConfigurationError(SelfLearningError):
+    """配置错误异常"""
+    pass
+
+
+class MessageCollectionError(SelfLearningError):
+    """消息收集异常"""
+    pass
+
+
+class StyleAnalysisError(SelfLearningError):
+    """风格分析异常"""
+    pass
+
+
+class PersonaUpdateError(SelfLearningError):
+    """人格更新异常"""
+    pass
+
+
+class ModelAccessError(SelfLearningError):
+    """模型访问异常"""
+    pass
+
+
+class DataStorageError(SelfLearningError):
+    """数据存储异常"""
+    pass
+
+
+class LearningSchedulerError(SelfLearningError):
+    """学习调度异常"""
+    pass

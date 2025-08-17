@@ -3,7 +3,8 @@ import httpx
 import json
 from typing import Optional, List, Dict, Any
 
-from astrbot.api import logger, Context
+from astrbot.api import logger
+from astrbot.core.message.context import Context
 
 class LLMResponse:
     """

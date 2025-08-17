@@ -31,7 +31,7 @@ class LearningStats:
     last_persona_update: Optional[str] = None
 
 
-@register("self_learning", "NickMo", "智能自学习对话插件", "1.0.0", "https://github.com/NickCharlie/astrabot_plugin_self_learning")
+@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.0.0", "https://github.com/NickCharlie/astrabot_plugin_self_learning")
 class SelfLearningPlugin(star.Star):
     """AstrBot 自学习插件 - 智能学习用户对话风格并优化人格设置"""
 

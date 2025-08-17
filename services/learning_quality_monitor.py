@@ -114,22 +114,22 @@ class LearningQualityMonitor:
                 return 0.5
             
             prompt = f"""
-请分析以下两个人格设定的一致性程度，给出0-1之间的得分：
+                请分析以下两个人格设定的一致性程度，给出0-1之间的得分：
 
-原始人格：
-{original_persona.get('prompt', '')}
+                原始人格：
+                {original_persona.get('prompt', '')}
 
-更新人格：
-{updated_persona.get('prompt', '')}
+                更新人格：
+                {updated_persona.get('prompt', '')}
 
-请从以下维度评估一致性：
-1. 核心性格特征是否保持
-2. 语言风格是否连贯
-3. 价值观是否一致
-4. 行为模式是否稳定
+                请从以下维度评估一致性：
+                1. 核心性格特征是否保持
+                2. 语言风格是否连贯
+                3. 价值观是否一致
+                4. 行为模式是否稳定
 
-直接返回一个0-1之间的数值，不需要其他解释。
-"""
+                直接返回一个0-1之间的数值，不需要其他解释。
+                """
             
             # 调用模型分析
             response = await llm_provider.text_chat(prompt)
@@ -209,17 +209,17 @@ class LearningQualityMonitor:
         messages_text = "\n".join([msg['message'] for msg in messages])
         
         prompt = f"""
-请分析以下消息集合的情感平衡性，并以JSON格式返回积极和消极情感的置信度分数（0-1之间）。
+                请分析以下消息集合的情感平衡性，并以JSON格式返回积极和消极情感的置信度分数（0-1之间）。
 
-消息集合：
-{messages_text}
+                消息集合：
+                {messages_text}
 
-请只返回一个JSON对象，例如：
-{{
-    "积极": 0.8,
-    "消极": 0.2
-}}
-"""
+                请只返回一个JSON对象，例如：
+                {{
+                    "积极": 0.8,
+                    "消极": 0.2
+                }}
+                """
         try:
             response = await self.refine_llm_client.chat_completion(prompt=prompt)
             if response and response.text():

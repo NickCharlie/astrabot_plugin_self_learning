@@ -64,7 +64,7 @@ class PersonaUpdater(IPersonaUpdater):
             
         except Exception as e:
             self._logger.error(f"人格更新失败: {e}")
-            return False
+            raise SelfLearningError(f"人格更新失败: {str(e)}") from e
     
     async def get_current_persona_description(self) -> Optional[str]:
         """获取当前人格的描述"""

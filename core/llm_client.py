@@ -26,18 +26,14 @@ class LLMClient:
     用于根据配置的 API URL 和 API Key 调用不同的 LLM。
     """
 
-    def __init__(self, api_url: str, api_key: str, model_name: str):
-        self.api_url = api_url
-        self.api_key = api_key
-        self.model_name = model_name
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
+    def __init__(self):
         self.client = httpx.AsyncClient(timeout=60.0) # 设置超时时间
 
     async def chat_completion(
         self,
+        api_url: str,
+        api_key: str,
+        model_name: str,
         prompt: str,
         contexts: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
@@ -46,6 +42,10 @@ class LLMClient:
         """
         执行 LLM 对话补全。
         """
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -54,14 +54,14 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         payload = {
-            "model": self.model_name,
+            "model": model_name,
             "messages": messages,
             **kwargs
         }
 
         try:
-            logger.debug(f"Calling LLM API: {self.api_url} with model {self.model_name}")
-            response = await self.client.post(self.api_url, headers=self.headers, json=payload)
+            logger.debug(f"Calling LLM API: {api_url} with model {model_name}")
+            response = await self.client.post(api_url, headers=headers, json=payload)
             response.raise_for_status() # 检查HTTP错误
 
             response_data = response.json()
@@ -74,14 +74,14 @@ class LLMClient:
                 logger.error(f"LLM API 响应格式不正确或无内容: {response_data}")
                 return None
         except httpx.RequestError as e:
-            logger.error(f"调用 LLM API ({self.api_url}) 请求失败: {e}")
+            logger.error(f"调用 LLM API ({api_url}) 请求失败: {e}", exc_info=True)
             return None
         except httpx.HTTPStatusError as e:
-            logger.error(f"调用 LLM API ({self.api_url}) HTTP 错误: {e.response.status_code} - {e.response.text}")
+            logger.error(f"调用 LLM API ({api_url}) HTTP 错误: {e.response.status_code} - {e.response.text}", exc_info=True)
             return None
         except json.JSONDecodeError as e:
-            logger.error(f"LLM API 响应解析失败: {e} - 响应内容: {response.text}")
+            logger.error(f"LLM API 响应解析失败: {e} - 响应内容: {response.text}", exc_info=True)
             return None
         except Exception as e:
-            logger.error(f"调用 LLM API ({self.api_url}) 发生未知错误: {e}")
+            logger.error(f"调用 LLM API ({api_url}) 发生未知错误: {e}", exc_info=True)
             return None

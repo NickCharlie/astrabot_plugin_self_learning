@@ -41,7 +41,18 @@ class SelfLearningPlugin(star.Star):
         self.config = config or {}
         
         # 初始化插件配置
-        self.plugin_config = PluginConfig.create_from_config(self.config)
+        # 获取插件数据目录，并传递给 PluginConfig
+        plugin_data_dir = self.context.get_data_dir()
+        self.plugin_config = PluginConfig.create_from_config(self.config, data_dir=plugin_data_dir)
+        
+        # 确保数据目录存在
+        os.makedirs(self.plugin_config.data_dir, exist_ok=True)
+        
+        # 初始化 messages_db_path 和 learning_log_path
+        if not self.plugin_config.messages_db_path:
+            self.plugin_config.messages_db_path = os.path.join(self.plugin_config.data_dir, "messages.db")
+        if not self.plugin_config.learning_log_path:
+            self.plugin_config.learning_log_path = os.path.join(self.plugin_config.data_dir, "learning.log")
         
         # 学习统计
         self.learning_stats = LearningStats()
@@ -76,9 +87,12 @@ class SelfLearningPlugin(star.Star):
             
             logger.info("自学习插件工厂模式服务层初始化完成")
             
+        except SelfLearningError as sle:
+            logger.error(f"自学习服务初始化失败: {sle}")
+            raise # 重新抛出，因为这是预期的初始化失败
         except Exception as e:
-            logger.error(f"服务层初始化失败: {e}")
-            raise SelfLearningError(f"插件初始化失败: {str(e)}") from e
+            logger.error(f"服务层初始化过程中发生未知错误: {e}", exc_info=True)
+            raise SelfLearningError(f"插件初始化失败: {str(e)}") from e # 转换为特定异常并重新抛出
     
     def _setup_internal_components(self):
         """设置内部组件 - 使用工厂模式"""
@@ -114,7 +128,7 @@ class SelfLearningPlugin(star.Star):
             logger.error(f"启动学习服务失败: {e}")
 
     @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(self, event: AstrMessageEvent, context=None):
+    async def on_message(self, event: AstrMessageEvent):
         """监听所有消息，收集用户对话数据"""
         
         # 检查是否启用消息抓取
@@ -149,7 +163,7 @@ class SelfLearningPlugin(star.Star):
                 await self._process_message_realtime(message_text, sender_id)
                 
         except Exception as e:
-            logger.error(f"消息收集失败: {e}")
+            logger.error(f"消息收集过程中发生未知错误: {e}", exc_info=True)
 
     async def _process_message_realtime(self, message_text: str, sender_id: str):
         """实时处理消息"""
@@ -165,7 +179,7 @@ class SelfLearningPlugin(star.Star):
                 self.learning_stats.filtered_messages += 1
                 
         except Exception as e:
-            logger.error(f"实时消息处理失败: {e}")
+            logger.error(f"实时消息处理过程中发生未知错误: {e}", exc_info=True)
 
     async def _perform_learning_cycle(self):
         """执行完整的学习周期"""
@@ -241,7 +255,7 @@ class SelfLearningPlugin(star.Star):
             logger.info("自学习周期完成")
             
         except Exception as e:
-            logger.error(f"学习周期执行失败: {e}")
+            logger.error(f"学习周期执行过程中发生未知错误: {e}", exc_info=True)
 
     @filter.command("learning_status")
     async def learning_status_command(self, event: AstrMessageEvent):
@@ -286,7 +300,7 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result(status_info.strip())
             
         except Exception as e:
-            logger.error(f"获取学习状态失败: {e}")
+            logger.error(f"获取学习状态失败: {e}", exc_info=True)
             yield event.plain_result(f"状态查询失败: {str(e)}")
 
     @filter.command("start_learning")
@@ -301,7 +315,7 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result("✅ 自动学习已启动")
             
         except Exception as e:
-            logger.error(f"启动学习失败: {e}")
+            logger.error(f"启动学习失败: {e}", exc_info=True)
             yield event.plain_result(f"启动失败: {str(e)}")
 
     @filter.command("stop_learning")
@@ -316,7 +330,7 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result("⏹️ 自动学习已停止")
             
         except Exception as e:
-            logger.error(f"停止学习失败: {e}")
+            logger.error(f"停止学习失败: {e}", exc_info=True)
             yield event.plain_result(f"停止失败: {str(e)}")
 
     @filter.command("force_learning")  
@@ -328,7 +342,7 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result("✅ 强制学习周期完成")
             
         except Exception as e:
-            logger.error(f"强制学习失败: {e}")
+            logger.error(f"强制学习失败: {e}", exc_info=True)
             yield event.plain_result(f"强制学习失败: {str(e)}")
 
     @filter.command("clear_data")
@@ -343,7 +357,7 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result("🗑️ 所有学习数据已清空")
             
         except Exception as e:
-            logger.error(f"清空数据失败: {e}")
+            logger.error(f"清空数据失败: {e}", exc_info=True)
             yield event.plain_result(f"清空数据失败: {str(e)}")
 
     @filter.command("export_data")
@@ -363,7 +377,7 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result(f"📤 学习数据已导出到: {filepath}")
             
         except Exception as e:
-            logger.error(f"导出数据失败: {e}")
+            logger.error(f"导出数据失败: {e}", exc_info=True)
             yield event.plain_result(f"导出数据失败: {str(e)}")
 
     async def terminate(self):
@@ -380,4 +394,4 @@ class SelfLearningPlugin(star.Star):
             logger.info("自学习插件已安全卸载")
             
         except Exception as e:
-            logger.error(f"插件卸载清理失败: {e}")
+            logger.error(f"插件卸载清理失败: {e}", exc_info=True)

@@ -4,7 +4,7 @@ import asyncio
 from typing import Dict, List, Optional, Any, Type
 from dataclasses import dataclass, field
 from datetime import datetime
-import logging
+
 
 from .interfaces import (
     IObserver, IEventPublisher, IServiceFactory, ILearningStrategy, 
@@ -29,7 +29,7 @@ class EventBus(IEventPublisher, metaclass=SingletonABCMeta):
     
     def __init__(self):
         self._observers: Dict[str, List[IObserver]] = {}
-        self._logger = logging.getLogger(self.__class__.__name__)
+        self._logger = logger
     
     def subscribe(self, event_type: str, observer: IObserver) -> None:
         """订阅事件"""
@@ -72,7 +72,7 @@ class AsyncServiceBase(IAsyncService):
     def __init__(self, name: str):
         self.name = name
         self._status = ServiceLifecycle.CREATED
-        self._logger = logging.getLogger(f"{self.__class__.__name__}[{name}]")
+        self._logger = logger
         self._event_bus = EventBus()
     
     @property
@@ -212,7 +212,7 @@ class ProgressiveLearningStrategy(ILearningStrategy):
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self._logger = logging.getLogger(self.__class__.__name__)
+        self._logger = logger
     
     async def execute_learning_cycle(self, messages: List[MessageData]) -> AnalysisResult:
         """执行渐进式学习"""
@@ -290,7 +290,7 @@ class BatchLearningStrategy(ILearningStrategy):
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self._logger = logging.getLogger(self.__class__.__name__)
+        self._logger = logger
     
     async def execute_learning_cycle(self, messages: List[MessageData]) -> AnalysisResult:
         """执行批量学习"""
@@ -362,7 +362,7 @@ class ServiceRegistry(metaclass=SingletonABCMeta):
     
     def __init__(self):
         self._services: Dict[str, IAsyncService] = {}
-        self._logger = logging.getLogger(self.__class__.__name__)
+        self._logger = logger
     
     def register_service(self, name: str, service: IAsyncService):
         """注册服务"""
@@ -429,7 +429,7 @@ class ConfigurationManager(metaclass=SingletonABCMeta):
     def __init__(self):
         self._config: Dict[str, Any] = {}
         self._observers: List[callable] = []
-        self._logger = logging.getLogger(self.__class__.__name__)
+        self._logger = logger
     
     def update_config(self, key: str, value: Any):
         """更新配置"""
@@ -464,7 +464,7 @@ class MetricsCollector(metaclass=SingletonABCMeta):
     
     def __init__(self):
         self._metrics: Dict[str, Any] = {}
-        self._logger = logging.getLogger(self.__class__.__name__)
+        self._logger = logger
     
     def record_metric(self, name: str, value: Any, tags: Dict[str, str] = None):
         """记录指标"""

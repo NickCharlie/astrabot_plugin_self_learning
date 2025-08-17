@@ -3,8 +3,8 @@
 """
 import os
 from typing import List, Optional
-from dataclasses import dataclass
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+from dataclasses import dataclass, asdict # 导入 asdict
+# from astrbot.core.utils.astrbot_path import get_astrbot_data_path # 不再直接使用
 
 
 @dataclass
@@ -82,24 +82,13 @@ class PluginConfig:
     persona_compatibility_threshold: float = 0.6  # 人格兼容性阈值
     
     # 存储路径
-    data_dir: str = ""
-    messages_db_path: str = ""
-    learning_log_path: str = ""
+    data_dir: Optional[str] = None # 允许外部传入，不再有默认值
+    messages_db_path: Optional[str] = None
+    learning_log_path: Optional[str] = None
     
     def __post_init__(self):
         """初始化后处理"""
-        if not self.data_dir:
-            self.data_dir = os.path.join(get_astrbot_data_path(), "self_learning")
-            
-        if not self.messages_db_path:
-            self.messages_db_path = os.path.join(self.data_dir, "messages.db")
-            
-        if not self.learning_log_path:
-            self.learning_log_path = os.path.join(self.data_dir, "learning.log")
-            
-        # 确保数据目录存在
-        os.makedirs(self.data_dir, exist_ok=True)
-        
+        # 这些路径的默认值和目录创建应在外部（如主插件类）处理
         # 初始化target_qq_list为空列表
         if self.target_qq_list is None:
             self.target_qq_list = []
@@ -109,7 +98,7 @@ class PluginConfig:
             self.intelligent_reply_keywords = ['bot', 'ai', '人工智能', '机器人', '助手']
 
     @classmethod
-    def create_from_config(cls, config: dict) -> 'PluginConfig':
+    def create_from_config(cls, config: dict, data_dir: Optional[str] = None) -> 'PluginConfig':
         """从AstrBot配置创建插件配置"""
         
         # 从配置中提取插件相关设置
@@ -149,7 +138,29 @@ class PluginConfig:
             confidence_threshold=plugin_settings.get('confidence_threshold', 0.7),
             
             style_analysis_batch_size=plugin_settings.get('style_analysis_batch_size', 100),
-            style_update_threshold=plugin_settings.get('style_update_threshold', 0.8)
+            style_update_threshold=plugin_settings.get('style_update_threshold', 0.8),
+            
+            # 新增的字段
+            enable_ml_analysis=plugin_settings.get('enable_ml_analysis', True),
+            max_ml_sample_size=plugin_settings.get('max_ml_sample_size', 100),
+            ml_cache_timeout_hours=plugin_settings.get('ml_cache_timeout_hours', 1),
+            enable_intelligent_reply=plugin_settings.get('enable_intelligent_reply', False),
+            reply_probability=plugin_settings.get('reply_probability', 0.1),
+            context_window_size=plugin_settings.get('context_window_size', 5),
+            intelligent_reply_keywords=plugin_settings.get('intelligent_reply_keywords', []),
+            auto_backup_enabled=plugin_settings.get('auto_backup_enabled', True),
+            backup_interval_hours=plugin_settings.get('backup_interval_hours', 24),
+            max_backups_per_group=plugin_settings.get('max_backups_per_group', 10),
+            debug_mode=plugin_settings.get('debug_mode', False),
+            save_raw_messages=plugin_settings.get('save_raw_messages', True),
+            auto_backup_interval_days=plugin_settings.get('auto_backup_interval_days', 7),
+            persona_merge_strategy=plugin_settings.get('persona_merge_strategy', 'smart'),
+            max_mood_imitation_dialogs=plugin_settings.get('max_mood_imitation_dialogs', 20),
+            enable_persona_evolution=plugin_settings.get('enable_persona_evolution', True),
+            persona_compatibility_threshold=plugin_settings.get('persona_compatibility_threshold', 0.6),
+            
+            # 传入数据目录
+            data_dir=data_dir
         )
 
     @classmethod
@@ -159,34 +170,8 @@ class PluginConfig:
 
     def to_dict(self) -> dict:
         """转换为字典格式"""
-        return {
-            'enable_message_capture': self.enable_message_capture,
-            'enable_auto_learning': self.enable_auto_learning,
-            'enable_realtime_learning': self.enable_realtime_learning,
-            'enable_web_interface': self.enable_web_interface,
-            'target_qq_list': self.target_qq_list,
-            'filter_model_name': self.filter_model_name,
-            'refine_model_name': self.refine_model_name,
-            'reinforce_model_name': self.reinforce_model_name,
-            'filter_provider_id': self.filter_provider_id,
-            'refine_provider_id': self.refine_provider_id,
-            'reinforce_provider_id': self.reinforce_provider_id,
-            'filter_api_url': self.filter_api_url,
-            'filter_api_key': self.filter_api_key,
-            'refine_api_url': self.refine_api_url,
-            'refine_api_key': self.refine_api_key,
-            'reinforce_api_url': self.reinforce_api_url,
-            'reinforce_api_key': self.reinforce_api_key,
-            'current_persona_name': self.current_persona_name,
-            'learning_interval_hours': self.learning_interval_hours,
-            'min_messages_for_learning': self.min_messages_for_learning,
-            'max_messages_per_batch': self.max_messages_per_batch,
-            'message_min_length': self.message_min_length,
-            'message_max_length': self.message_max_length,
-            'confidence_threshold': self.confidence_threshold,
-            'style_analysis_batch_size': self.style_analysis_batch_size,
-            'style_update_threshold': self.style_update_threshold
-        }
+        # 使用 asdict 可以确保所有字段都被包含
+        return asdict(self)
 
     def validate(self) -> List[str]:
         """验证配置有效性，返回错误信息列表"""

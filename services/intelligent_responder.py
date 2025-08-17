@@ -222,11 +222,11 @@ class IntelligentResponder:
         """记录回复信息用于学习"""
         try:
             conn = await self.db_manager.get_group_connection(group_id)
-            cursor = conn.cursor()
+            cursor = await conn.cursor()
             
             # 简化实现：filtered_messages 表用于记录所有经过筛选的消息，包括BOT的回复。
             # 实际应用中，可能需要为BOT回复创建单独的表以区分。
-            cursor.execute('''
+            await cursor.execute('''
                 INSERT OR IGNORE INTO filtered_messages 
                 (message, sender_id, confidence, filter_reason, timestamp, used_for_learning)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -239,7 +239,7 @@ class IntelligentResponder:
                 False # BOT回复不用于学习，避免循环学习
             ))
             
-            conn.commit()
+            await conn.commit()
             
         except Exception as e:
             logger.error(f"记录回复失败: {e}")
@@ -267,13 +267,13 @@ class IntelligentResponder:
             cursor = conn.cursor()
             
             # 统计BOT回复次数
-            cursor.execute('''
+            await cursor.execute('''
                 SELECT COUNT(*) 
                 FROM filtered_messages 
                 WHERE sender_id = 'bot' AND timestamp > ?
             ''', (time.time() - self.DAILY_RESPONSE_STATS_PERIOD_SECONDS,))  # 最近24小时
             
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
             daily_responses = row[0] if row else 0
             
             return {
@@ -297,16 +297,17 @@ class IntelligentResponder:
             cursor = conn.cursor()
             
             # 分析最近消息的情感倾向
-            cursor.execute('''
+            await cursor.execute('''
                 SELECT COUNT(*) as total_messages,
                        AVG(LENGTH(message)) as avg_length
                 FROM raw_messages 
                 WHERE timestamp > ?
             ''', (time.time() - self.GROUP_ATMOSPHERE_PERIOD_SECONDS,))  # 最近1小时
             
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
             
-            row = cursor.fetchone()
+            # 修正：这里重复获取了一次fetchone，导致数据可能不正确。应该只获取一次。
+            # row = await cursor.fetchone() 
             total_messages = row[0] if row else 0
             avg_length = row[1] if row else 0.0
             
@@ -319,121 +320,3 @@ class IntelligentResponder:
         except Exception as e:
             logger.error(f"分析群氛围失败: {e}")
             return {'activity_level': 'unknown'}
-
-    async def _build_enhanced_prompt(self, context_info: Dict[str, Any], message: str) -> str:
-        """构建增强的提示词"""
-        prompt_parts = []
-        
-        # 基础人格设定
-        current_persona = self.config.current_persona or "你是一个友好、智能的AI助手"
-        prompt_parts.append(f"人格设定: {current_persona}")
-        
-        # 用户画像信息
-        if context_info['sender_profile']:
-            profile = context_info['sender_profile']
-            prompt_parts.append(f"""
-用户信息:
-- QQ号: {profile.get('qq_id', '未知')}
-- 昵称: {profile.get('qq_name', '未知')}
-- 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}
-- 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}
-""")
-        
-        # 社交关系
-        if context_info['social_relations']:
-            relations_desc = []
-            for rel in context_info['social_relations'][:3]:
-                relations_desc.append(f"与{rel['to_user']}关系强度{rel['strength']:.2f}")
-            prompt_parts.append(f"社交关系: {', '.join(relations_desc)}")
-        
-        # 群聊氛围
-        atmosphere = context_info['group_atmosphere']
-        prompt_parts.append(f"当前群聊氛围: {atmosphere.get('activity_level', '未知')}活跃度")
-        
-        # 最近消息上下文
-        if context_info['recent_messages']:
-            recent_msgs = []
-            for msg in context_info['recent_messages'][:3]:
-                recent_msgs.append(f"{msg['sender_name']}: {msg['message'][:50]}")
-            prompt_parts.append(f"最近对话: {' | '.join(recent_msgs)}")
-        
-        # 当前消息
-        prompt_parts.append(f"当前消息: {message}")
-        
-        # 回复要求
-        prompt_parts.append("""
-请基于以上信息生成一个自然、智能的回复。要求:
-1. 符合设定的人格特征
-2. 考虑用户的沟通风格和偏好
-3. 适应当前的群聊氛围
-4. 回复简洁明了，不超过100字
-5. 语言风格要自然流畅
-""")
-        
-        return "\n\n".join(prompt_parts)
-
-    async def _record_response(self, group_id: str, sender_id: str, original_message: str, response: str):
-        """记录回复信息用于学习"""
-        try:
-            conn = await self.db_manager.get_group_connection(group_id)
-            cursor = conn.cursor()
-            
-            # 简化实现：可以创建一个回复记录表
-            cursor.execute('''
-                INSERT OR IGNORE INTO filtered_messages 
-                (message, sender_id, confidence, filter_reason, timestamp, used_for_learning)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                f"BOT回复: {response}",
-                "bot",
-                1.0,
-                f"回复{sender_id}: {original_message[:50]}",
-                time.time(),
-                False
-            ))
-            
-            conn.commit()
-            
-        except Exception as e:
-            logger.error(f"记录回复失败: {e}")
-
-    async def send_intelligent_response(self, event: AstrMessageEvent):
-        """发送智能回复"""
-        try:
-            if not await self.should_respond(event):
-                return
-            
-            response = await self.generate_intelligent_response(event)
-            
-            if response:
-                # 通过事件系统发送回复
-                await event.send(response)
-                logger.info(f"已发送智能回复: {response[:50]}...")
-                
-        except Exception as e:
-            logger.error(f"发送智能回复失败: {e}")
-
-    async def get_response_statistics(self, group_id: str) -> Dict[str, Any]:
-        """获取回复统计"""
-        try:
-            conn = await self.db_manager.get_group_connection(group_id)
-            cursor = conn.cursor()
-            
-            # 统计BOT回复次数
-            cursor.execute('''
-                SELECT COUNT(*) 
-                FROM filtered_messages 
-                WHERE sender_id = 'bot' AND timestamp > ?
-            ''', (time.time() - self.DAILY_RESPONSE_STATS_PERIOD_SECONDS,))  # 最近24小时
-            
-            daily_responses = cursor.fetchone() if cursor.fetchone() else 0
-            
-            return {
-                'daily_responses': daily_responses,
-                'response_rate': self.reply_probability,
-                'intelligent_reply_enabled': self.enable_intelligent_reply
-            }
-            
-        except Exception as e:
-            logger.error(f"获取回复统计失败: {e}")
-            return {}

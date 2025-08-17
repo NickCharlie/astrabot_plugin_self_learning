@@ -3,7 +3,7 @@
 """
 import os
 import json
-import sqlite3
+import aiosqlite
 import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -13,43 +13,63 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..exceptions import DataStorageError
+from ..core.interfaces import IAsyncService
+from ..core.patterns import AsyncServiceBase
 
 
-class DatabaseManager:
+class DatabaseManager(AsyncServiceBase):
     """数据库管理器 - 管理分群数据库和全局消息数据库的数据持久化"""
     
     def __init__(self, config: PluginConfig, context=None):
+        super().__init__("database_manager") # 调用基类构造函数
         self.config = config
         self.context = context
-        self.group_db_connections: Dict[str, sqlite3.Connection] = {}
+        self.group_db_connections: Dict[str, aiosqlite.Connection] = {}
         self.group_data_dir = os.path.join(config.data_dir, "group_databases")
         self.messages_db_path = config.messages_db_path
-        self.messages_db_connection: Optional[sqlite3.Connection] = None
+        self.messages_db_connection: Optional[aiosqlite.Connection] = None
         
         # 确保数据目录存在
         os.makedirs(self.group_data_dir, exist_ok=True)
         
-        # 初始化全局消息数据库
-        self._init_messages_database()
-        
-        logger.info("数据库管理器初始化完成")
+        self._logger.info("数据库管理器初始化完成") # 使用基类的logger
 
-    def _get_messages_db_connection(self) -> sqlite3.Connection:
+    async def _do_start(self) -> bool:
+        """启动服务时初始化数据库"""
+        try:
+            await self._init_messages_database()
+            self._logger.info("全局消息数据库初始化成功")
+            return True
+        except Exception as e:
+            self._logger.error(f"全局消息数据库初始化失败: {e}", exc_info=True)
+            return False
+
+    async def _do_stop(self) -> bool:
+        """停止服务时关闭所有数据库连接"""
+        try:
+            await self.close_all_connections()
+            self._logger.info("所有数据库连接已关闭")
+            return True
+        except Exception as e:
+            self._logger.error(f"关闭数据库连接失败: {e}", exc_info=True)
+            return False
+
+    async def _get_messages_db_connection(self) -> aiosqlite.Connection:
         """获取全局消息数据库连接"""
         if self.messages_db_connection is None:
             # 确保目录存在
             os.makedirs(os.path.dirname(self.messages_db_path), exist_ok=True)
-            self.messages_db_connection = sqlite3.connect(self.messages_db_path, check_same_thread=False)
+            self.messages_db_connection = await aiosqlite.connect(self.messages_db_path)
         return self.messages_db_connection
 
-    def _init_messages_database(self):
+    async def _init_messages_database(self):
         """初始化全局消息SQLite数据库"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
         
         try:
             # 创建原始消息表
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS raw_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     sender_id TEXT NOT NULL,
@@ -64,7 +84,7 @@ class DatabaseManager:
             ''')
             
             # 创建筛选后消息表
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS filtered_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     raw_message_id INTEGER,
@@ -81,14 +101,14 @@ class DatabaseManager:
             ''')
             
             # 检查并添加 quality_scores 列（如果不存在）
-            cursor.execute("PRAGMA table_info(filtered_messages)")
-            columns = [col[1] for col in cursor.fetchall()]
+            await cursor.execute("PRAGMA table_info(filtered_messages)")
+            columns = [col[1] for col in await cursor.fetchall()]
             if 'quality_scores' not in columns:
-                cursor.execute("ALTER TABLE filtered_messages ADD COLUMN quality_scores TEXT")
+                await cursor.execute("ALTER TABLE filtered_messages ADD COLUMN quality_scores TEXT")
                 logger.info("已为 filtered_messages 表添加 quality_scores 列。")
 
             # 创建学习批次表
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS learning_batches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     batch_name TEXT UNIQUE,
@@ -103,44 +123,44 @@ class DatabaseManager:
             ''')
             
             # 创建索引
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_messages_timestamp ON raw_messages(timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_messages_sender ON raw_messages(sender_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_messages_processed ON raw_messages(processed)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_filtered_messages_confidence ON filtered_messages(confidence)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_filtered_messages_used ON filtered_messages(used_for_learning)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_messages_timestamp ON raw_messages(timestamp)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_messages_sender ON raw_messages(sender_id)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_messages_processed ON raw_messages(processed)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_filtered_messages_confidence ON filtered_messages(confidence)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_filtered_messages_used ON filtered_messages(used_for_learning)')
             
-            conn.commit()
+            await conn.commit()
             logger.info("全局消息数据库初始化完成")
             
-        except Exception as e:
-            logger.error(f"全局消息数据库初始化失败: {e}")
+        except aiosqlite.Error as e:
+            logger.error(f"全局消息数据库初始化失败: {e}", exc_info=True)
             raise DataStorageError(f"全局消息数据库初始化失败: {str(e)}")
 
     def get_group_db_path(self, group_id: str) -> str:
         """获取群数据库文件路径"""
         return os.path.join(self.group_data_dir, f"{group_id}_ID.db")
 
-    async def get_group_connection(self, group_id: str) -> sqlite3.Connection:
+    async def get_group_connection(self, group_id: str) -> aiosqlite.Connection:
         """获取群数据库连接"""
         if group_id not in self.group_db_connections:
             db_path = self.get_group_db_path(group_id)
-            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn = await aiosqlite.connect(db_path)
             await self._init_group_database(conn)
             self.group_db_connections[group_id] = conn
             logger.info(f"已创建群 {group_id} 的数据库连接")
         
         return self.group_db_connections[group_id]
 
-    async def _init_group_database(self, conn: sqlite3.Connection):
+    async def _init_group_database(self, conn: aiosqlite.Connection):
         """初始化群数据库表结构"""
-        cursor = conn.cursor()
+        cursor = await conn.cursor()
         
         try:
             # 原始消息表 (群数据库中不再存储原始消息，由全局消息数据库统一管理)
             # 筛选消息表 (群数据库中不再存储筛选消息，由全局消息数据库统一管理)
             
             # 用户画像表
-            cursor.execute('''
+            await cursor.execute(''' 
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     qq_id TEXT PRIMARY KEY,
                     qq_name TEXT,
@@ -156,7 +176,7 @@ class DatabaseManager:
             ''')
             
             # 社交关系表
-            cursor.execute('''
+            await cursor.execute(''' 
                 CREATE TABLE IF NOT EXISTS social_relations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     from_user TEXT NOT NULL,
@@ -172,7 +192,7 @@ class DatabaseManager:
             ''')
             
             # 风格档案表
-            cursor.execute('''
+            await cursor.execute(''' 
                 CREATE TABLE IF NOT EXISTS style_profiles (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile_name TEXT NOT NULL,
@@ -188,7 +208,7 @@ class DatabaseManager:
             ''')
             
             # 人格备份表
-            cursor.execute('''
+            await cursor.execute(''' 
                 CREATE TABLE IF NOT EXISTS persona_backups (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     backup_name TEXT NOT NULL,
@@ -200,7 +220,7 @@ class DatabaseManager:
             ''')
             
             # 学习会话表
-            cursor.execute('''
+            await cursor.execute(''' 
                 CREATE TABLE IF NOT EXISTS learning_sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT UNIQUE NOT NULL,
@@ -216,24 +236,24 @@ class DatabaseManager:
             ''')
             
             # 创建索引
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_social_relations_from_user ON social_relations(from_user)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_social_relations_to_user ON social_relations(to_user)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_profiles_active ON user_profiles(last_active)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_social_relations_from_user ON social_relations(from_user)') 
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_social_relations_to_user ON social_relations(to_user)') 
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_profiles_active ON user_profiles(last_active)') 
             
-            conn.commit()
-            logger.debug("群数据库表结构初始化完成")
+            await conn.commit() 
+            logger.debug("群数据库表结构初始化完成") 
             
-        except Exception as e:
-            logger.error(f"初始化群数据库失败: {e}")
+        except aiosqlite.Error as e: 
+            logger.error(f"初始化群数据库失败: {e}", exc_info=True) 
             raise DataStorageError(f"初始化群数据库失败: {str(e)}")
 
     async def save_user_profile(self, group_id: str, profile_data: Dict[str, Any]):
         """保存用户画像到数据库"""
         conn = await self.get_group_connection(group_id)
-        cursor = conn.cursor()
+        cursor = await conn.cursor()
         
         try:
-            cursor.execute('''
+            await cursor.execute('''
                 INSERT OR REPLACE INTO user_profiles 
                 (qq_id, qq_name, nicknames, activity_pattern, communication_style, 
                  topic_preferences, emotional_tendency, last_active, updated_at)
@@ -250,50 +270,50 @@ class DatabaseManager:
                 datetime.now().isoformat()
             ))
             
-            conn.commit()
+            await conn.commit()
             
-        except Exception as e:
-            logger.error(f"保存用户画像失败: {e}")
+        except aiosqlite.Error as e:
+            logger.error(f"保存用户画像失败: {e}", exc_info=True)
             raise DataStorageError(f"保存用户画像失败: {str(e)}")
 
     async def load_user_profile(self, group_id: str, qq_id: str) -> Optional[Dict[str, Any]]:
         """从数据库加载用户画像"""
         conn = await self.get_group_connection(group_id)
-        cursor = conn.cursor()
+        cursor = await conn.cursor()
         
         try:
-            cursor.execute('''
+            await cursor.execute('''
                 SELECT qq_id, qq_name, nicknames, activity_pattern, communication_style,
                        topic_preferences, emotional_tendency, last_active
                 FROM user_profiles WHERE qq_id = ?
             ''', (qq_id,))
             
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
             if not row:
                 return None
             
             return {
-                'qq_id': row,
+                'qq_id': row[0],
                 'qq_name': row[1],
-                'nicknames': json.loads(row) if row else [],
-                'activity_pattern': json.loads(row) if row else {},
-                'communication_style': json.loads(row) if row else {},
-                'topic_preferences': json.loads(row) if row else {},
-                'emotional_tendency': json.loads(row) if row else {},
-                'last_active': row
+                'nicknames': json.loads(row[2]) if row[2] else [],
+                'activity_pattern': json.loads(row[3]) if row[3] else {},
+                'communication_style': json.loads(row[4]) if row[4] else {},
+                'topic_preferences': json.loads(row[5]) if row[5] else {},
+                'emotional_tendency': json.loads(row[6]) if row[6] else {},
+                'last_active': row[7]
             }
             
-        except Exception as e:
-            logger.error(f"加载用户画像失败: {e}")
+        except aiosqlite.Error as e:
+            logger.error(f"加载用户画像失败: {e}", exc_info=True)
             return None
 
     async def save_social_relation(self, group_id: str, relation_data: Dict[str, Any]):
         """保存社交关系到数据库"""
         conn = await self.get_group_connection(group_id)
-        cursor = conn.cursor()
+        cursor = await conn.cursor()
         
         try:
-            cursor.execute('''
+            await cursor.execute(''' 
                 INSERT OR REPLACE INTO social_relations 
                 (from_user, to_user, relation_type, strength, frequency, last_interaction, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -307,47 +327,47 @@ class DatabaseManager:
                 datetime.now().isoformat()
             ))
             
-            conn.commit()
+            await conn.commit()
             
-        except Exception as e:
-            logger.error(f"保存社交关系失败: {e}")
+        except aiosqlite.Error as e:
+            logger.error(f"保存社交关系失败: {e}", exc_info=True)
             raise DataStorageError(f"保存社交关系失败: {str(e)}")
 
     async def load_social_graph(self, group_id: str) -> List[Dict[str, Any]]:
         """加载完整社交图谱"""
         conn = await self.get_group_connection(group_id)
-        cursor = conn.cursor()
+        cursor = await conn.cursor()
         
         try:
-            cursor.execute('''
+            await cursor.execute('''
                 SELECT from_user, to_user, relation_type, strength, frequency, last_interaction
                 FROM social_relations ORDER BY strength DESC
             ''')
             
             relations = []
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():
                 relations.append({
-                    'from_user': row,
+                    'from_user': row[0], # 修正数据解析
                     'to_user': row[1],
-                    'relation_type': row,
-                    'strength': row,
-                    'frequency': row,
-                    'last_interaction': row
+                    'relation_type': row[2],
+                    'strength': row[3],
+                    'frequency': row[4],
+                    'last_interaction': row[5]
                 })
             
             return relations
             
-        except Exception as e:
-            logger.error(f"加载社交图谱失败: {e}")
+        except aiosqlite.Error as e:
+            self._logger.error(f"加载社交图谱失败: {e}", exc_info=True) # 使用基类的logger
             return []
 
     async def backup_persona(self, group_id: str, backup_data: Dict[str, Any]) -> int:
         """备份人格数据"""
         conn = await self.get_group_connection(group_id)
-        cursor = conn.cursor()
+        cursor = await conn.cursor()
         
         try:
-            cursor.execute('''
+            await cursor.execute(''' 
                 INSERT INTO persona_backups (backup_name, original_persona, imitation_dialogues, backup_reason)
                 VALUES (?, ?, ?, ?)
             ''', (
@@ -358,22 +378,22 @@ class DatabaseManager:
             ))
             
             backup_id = cursor.lastrowid
-            conn.commit()
+            await conn.commit()
             
             logger.info(f"人格数据已备份，备份ID: {backup_id}")
             return backup_id
             
-        except Exception as e:
-            logger.error(f"备份人格数据失败: {e}")
+        except aiosqlite.Error as e:
+            logger.error(f"备份人格数据失败: {e}", exc_info=True)
             raise DataStorageError(f"备份人格数据失败: {str(e)}")
 
     async def get_persona_backups(self, group_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         """获取人格备份列表"""
         conn = await self.get_group_connection(group_id)
-        cursor = conn.cursor()
+        cursor = await conn.cursor()
         
         try:
-            cursor.execute('''
+            await cursor.execute(''' 
                 SELECT id, backup_name, backup_reason, created_at
                 FROM persona_backups 
                 ORDER BY created_at DESC 
@@ -381,82 +401,82 @@ class DatabaseManager:
             ''', (limit,))
             
             backups = []
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():
                 backups.append({
-                    'id': row,
+                    'id': row[0],
                     'backup_name': row[1],
-                    'backup_reason': row,
-                    'created_at': row
+                    'backup_reason': row[2],
+                    'created_at': row[3]
                 })
             
             return backups
             
-        except Exception as e:
-            logger.error(f"获取人格备份列表失败: {e}")
+        except aiosqlite.Error as e:
+            logger.error(f"获取人格备份列表失败: {e}", exc_info=True)
             return []
 
     async def restore_persona_backup(self, group_id: str, backup_id: int) -> Optional[Dict[str, Any]]:
         """恢复人格备份"""
         conn = await self.get_group_connection(group_id)
-        cursor = conn.cursor()
+        cursor = await conn.cursor()
         
         try:
-            cursor.execute('''
+            await cursor.execute(''' 
                 SELECT original_persona, imitation_dialogues 
                 FROM persona_backups 
                 WHERE id = ?
             ''', (backup_id,))
             
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
             if not row:
                 return None
             
             return {
-                'original_persona': json.loads(row),
-                'imitation_dialogues': json.loads(row)[1]
+                'original_persona': json.loads(row[0]),
+                'imitation_dialogues': json.loads(row[1])
             }
             
-        except Exception as e:
-            logger.error(f"恢复人格备份失败: {e}")
+        except aiosqlite.Error as e:
+            logger.error(f"恢复人格备份失败: {e}", exc_info=True)
             return None
 
     async def get_group_statistics(self, group_id: str) -> Dict[str, Any]:
         """获取群统计信息"""
         conn = await self.get_group_connection(group_id)
-        cursor = conn.cursor()
+        cursor = await conn.cursor() # 添加 await
         
         try:
             stats = {}
             
             # 消息统计
-            cursor.execute('SELECT COUNT(*) FROM raw_messages')
-            stats['total_messages'] = cursor.fetchone()
+            await cursor.execute('SELECT COUNT(*) FROM raw_messages') # 添加 await
+            stats['total_messages'] = (await cursor.fetchone())[0] # 添加 await 并获取第一个元素
             
-            cursor.execute('SELECT COUNT(*) FROM filtered_messages')
-            stats['filtered_messages'] = cursor.fetchone()
+            await cursor.execute('SELECT COUNT(*) FROM filtered_messages') # 添加 await
+            stats['filtered_messages'] = (await cursor.fetchone())[0] # 添加 await 并获取第一个元素
             
             # 用户统计
-            cursor.execute('SELECT COUNT(*) FROM user_profiles')
-            stats['total_users'] = cursor.fetchone()
+            await cursor.execute('SELECT COUNT(*) FROM user_profiles') # 添加 await
+            stats['total_users'] = (await cursor.fetchone())[0] # 添加 await 并获取第一个元素
             
             # 社交关系统计
-            cursor.execute('SELECT COUNT(*) FROM social_relations')
-            stats['total_relations'] = cursor.fetchone()
+            await cursor.execute('SELECT COUNT(*) FROM social_relations') # 添加 await
+            stats['total_relations'] = (await cursor.fetchone())[0] # 添加 await 并获取第一个元素
             
             # 备份统计
-            cursor.execute('SELECT COUNT(*) FROM persona_backups')
-            stats['total_backups'] = cursor.fetchone()
+            await cursor.execute('SELECT COUNT(*) FROM persona_backups') # 添加 await
+            stats['total_backups'] = (await cursor.fetchone())[0] # 添加 await 并获取第一个元素
             
             return stats
             
-        except Exception as e:
-            logger.error(f"获取群统计失败: {e}")
+        except aiosqlite.Error as e:
+            self._logger.error(f"获取群统计失败: {e}", exc_info=True) # 使用基类的logger
             return {}
 
     async def collect_message(self, message_data: Dict[str, Any]) -> bool:
         """收集消息到缓存并刷新到数据库"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()  # 添加 await
+        cursor = await conn.cursor()  # 添加 await
         try:
             # 验证消息数据
             required_fields = ['sender_id', 'message', 'timestamp']
@@ -474,24 +494,24 @@ class DatabaseManager:
                 message_data['timestamp']
             )
             
-            cursor.execute('''
+            await cursor.execute('''  # 添加 await
                 INSERT INTO raw_messages 
                 (sender_id, sender_name, message, group_id, platform, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', insert_data)
             
-            conn.commit()
+            await conn.commit()  # 添加 await
             logger.debug(f"已收集并插入一条消息到数据库: {message_data['sender_id']}")
             return True
             
-        except Exception as e:
-            logger.error(f"消息收集失败: {e}")
+        except aiosqlite.Error as e:
+            logger.error(f"消息收集失败: {e}", exc_info=True)
             raise DataStorageError(f"消息收集失败: {str(e)}")
 
     async def get_unprocessed_messages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取未处理的消息"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()  # 添加 await
+        cursor = await conn.cursor()  # 添加 await
         try:
             query = '''
                 SELECT id, sender_id, sender_name, message, group_id, platform, timestamp
@@ -503,8 +523,8 @@ class DatabaseManager:
             if limit:
                 query += f' LIMIT {limit}'
             
-            cursor.execute(query)
-            rows = cursor.fetchall()
+            await cursor.execute(query)  # 添加 await
+            rows = await cursor.fetchall()  # 添加 await
             
             messages = []
             for row in rows:
@@ -520,18 +540,18 @@ class DatabaseManager:
             
             return messages
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"获取未处理消息失败: {e}")
             raise DataStorageError(f"获取未处理消息失败: {str(e)}")
 
     async def add_filtered_message(self, filtered_data: Dict[str, Any]) -> bool:
         """添加筛选后的消息"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()  # 添加 await
+        cursor = await conn.cursor()  # 添加 await
         try:
             quality_scores_json = json.dumps(filtered_data.get('quality_scores', {}), ensure_ascii=False)
             
-            cursor.execute('''
+            await cursor.execute('''  # 添加 await
                 INSERT INTO filtered_messages 
                 (raw_message_id, message, sender_id, confidence, filter_reason, timestamp, quality_scores)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -545,39 +565,39 @@ class DatabaseManager:
                 quality_scores_json
             ))
             
-            conn.commit()
+            await conn.commit()  # 添加 await
             return True
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"添加筛选消息失败: {e}")
             raise DataStorageError(f"添加筛选消息失败: {str(e)}")
 
     async def mark_messages_processed(self, message_ids: List[int]):
         """标记消息为已处理"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()  # 添加 await
+        cursor = await conn.cursor()  # 添加 await
         try:
             if not message_ids:
                 return
                 
             placeholders = ','.join(['?' for _ in message_ids])
-            cursor.execute(f'''
+            await cursor.execute(f'''  # 添加 await
                 UPDATE raw_messages 
                 SET processed = TRUE 
                 WHERE id IN ({placeholders})
             ''', message_ids)
             
-            conn.commit()
+            await conn.commit()  # 添加 await
             logger.debug(f"已标记 {len(message_ids)} 条消息为已处理")
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"标记消息处理状态失败: {e}")
             raise DataStorageError(f"标记消息处理状态失败: {str(e)}")
 
     async def get_filtered_messages_for_learning(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取用于学习的筛选消息"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()  # 添加 await
+        cursor = await conn.cursor()  # 添加 await
         try:
             query = '''
                 SELECT id, message, sender_id, confidence, timestamp, quality_scores
@@ -589,8 +609,8 @@ class DatabaseManager:
             if limit:
                 query += f' LIMIT {limit}'
             
-            cursor.execute(query)
-            rows = cursor.fetchall()
+            await cursor.execute(query)  # 添加 await
+            rows = await cursor.fetchall()  # 添加 await
             
             messages = []
             for row in rows:
@@ -606,7 +626,7 @@ class DatabaseManager:
             
             return messages
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"获取学习消息失败: {e}")
             raise DataStorageError(f"获取学习消息失败: {str(e)}")
 
@@ -614,8 +634,8 @@ class DatabaseManager:
         """
         获取指定群组最近的、包含多维度评分的筛选消息。
         """
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()  # 添加 await
+        cursor = await conn.cursor()  # 添加 await
         try:
             query = '''
                 SELECT fm.id, fm.message, fm.sender_id, fm.confidence, fm.timestamp, fm.quality_scores, rm.group_id
@@ -625,8 +645,8 @@ class DatabaseManager:
                 ORDER BY fm.timestamp DESC
                 LIMIT ?
             '''
-            cursor.execute(query, (group_id, limit))
-            rows = cursor.fetchall()
+            await cursor.execute(query, (group_id, limit))  # 添加 await
+            rows = await cursor.fetchall()  # 添加 await
 
             messages = []
             for row in rows:
@@ -643,35 +663,35 @@ class DatabaseManager:
             
             return messages
 
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"获取最近筛选消息失败: {e}")
             return []
 
     async def get_messages_statistics(self) -> Dict[str, Any]:
         """获取消息收集统计信息"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()  # 添加 await
+        cursor = await conn.cursor()  # 添加 await
         try:
             # 统计原始消息
-            cursor.execute('SELECT COUNT(*) FROM raw_messages')
-            total_raw = cursor.fetchone()[0]
+            await cursor.execute('SELECT COUNT(*) FROM raw_messages')  # 添加 await
+            total_raw = (await cursor.fetchone())[0]  # 添加 await
             
-            cursor.execute('SELECT COUNT(*) FROM raw_messages WHERE processed = FALSE')
-            unprocessed = cursor.fetchone()[0]
+            await cursor.execute('SELECT COUNT(*) FROM raw_messages WHERE processed = FALSE')  # 添加 await
+            unprocessed = (await cursor.fetchone())[0]  # 添加 await
             
             # 统计筛选消息
-            cursor.execute('SELECT COUNT(*) FROM filtered_messages')
-            total_filtered = cursor.fetchone()[0]
+            await cursor.execute('SELECT COUNT(*) FROM filtered_messages')  # 添加 await
+            total_filtered = (await cursor.fetchone())[0]  # 添加 await
             
-            cursor.execute('SELECT COUNT(*) FROM filtered_messages WHERE used_for_learning = FALSE')
-            unused_filtered = cursor.fetchone()[0]
+            await cursor.execute('SELECT COUNT(*) FROM filtered_messages WHERE used_for_learning = FALSE')  # 添加 await
+            unused_filtered = (await cursor.fetchone())[0]  # 添加 await
             
             # 统计学习批次
-            cursor.execute('SELECT COUNT(*) FROM learning_batches')
-            total_batches = cursor.fetchone()[0]
+            await cursor.execute('SELECT COUNT(*) FROM learning_batches')  # 添加 await
+            total_batches = (await cursor.fetchone())[0]  # 添加 await
             
-            cursor.execute('SELECT COUNT(*) FROM learning_batches WHERE success = TRUE')
-            successful_batches = cursor.fetchone()[0]
+            await cursor.execute('SELECT COUNT(*) FROM learning_batches WHERE success = TRUE')  # 添加 await
+            successful_batches = (await cursor.fetchone())[0]  # 添加 await
             
             return {
                 'raw_messages': total_raw,
@@ -682,24 +702,24 @@ class DatabaseManager:
                 'successful_batches': successful_batches,
             }
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"获取消息统计信息失败: {e}")
             return {}
 
     async def export_messages_learning_data(self) -> Dict[str, Any]:
         """导出消息学习数据"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()  # 添加 await
+        cursor = await conn.cursor()  # 添加 await
         try:
             # 导出筛选后的消息
-            cursor.execute('''
+            await cursor.execute('''  # 添加 await
                 SELECT message, sender_id, confidence, timestamp, used_for_learning, quality_scores
                 FROM filtered_messages 
                 ORDER BY timestamp DESC
             ''')
             
             filtered_messages = []
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():  # 添加 await
                 quality_scores = json.loads(row[5]) if row[5] else {}
                 filtered_messages.append({
                     'message': row[0],
@@ -711,7 +731,7 @@ class DatabaseManager:
                 })
             
             # 导出学习批次
-            cursor.execute('''
+            await cursor.execute('''  # 添加 await
                 SELECT batch_name, start_time, end_time, message_count, 
                        filtered_count, success, error_message
                 FROM learning_batches 
@@ -719,7 +739,7 @@ class DatabaseManager:
             ''')
             
             learning_batches = []
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():  # 添加 await
                 learning_batches.append({
                     'batch_name': row[0],
                     'start_time': row[1],
@@ -737,48 +757,48 @@ class DatabaseManager:
                 'statistics': await self.get_messages_statistics()
             }
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"导出消息学习数据失败: {e}")
             raise DataStorageError(f"导出消息学习数据失败: {str(e)}")
 
     async def clear_all_messages_data(self):
         """清空所有消息数据"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
         try:
-            cursor.execute('DELETE FROM learning_batches')
-            cursor.execute('DELETE FROM filtered_messages')
-            cursor.execute('DELETE FROM raw_messages')
+            await cursor.execute('DELETE FROM learning_batches')
+            await cursor.execute('DELETE FROM filtered_messages')
+            await cursor.execute('DELETE FROM raw_messages')
             
-            conn.commit()
+            await conn.commit()
             logger.info("所有消息数据已清空")
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"清空消息数据失败: {e}")
             raise DataStorageError(f"清空消息数据失败: {str(e)}")
 
     async def create_learning_batch(self, batch_name: str) -> int:
         """创建学习批次记录"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
         try:
-            cursor.execute('''
+            await cursor.execute('''
                 INSERT INTO learning_batches (batch_name, start_time)
                 VALUES (?, ?)
             ''', (batch_name, datetime.now().isoformat()))
             
             batch_id = cursor.lastrowid
-            conn.commit()
+            await conn.commit()
             return batch_id
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"创建学习批次失败: {e}")
             raise DataStorageError(f"创建学习批次失败: {str(e)}")
 
     async def update_learning_batch(self, batch_id: int, **kwargs):
         """更新学习批次信息"""
-        conn = self._get_messages_db_connection()
-        cursor = conn.cursor()
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
         try:
             update_fields = []
             values = []
@@ -806,10 +826,10 @@ class DatabaseManager:
             if update_fields:
                 values.append(batch_id)
                 query = f"UPDATE learning_batches SET {', '.join(update_fields)} WHERE id = ?"
-                cursor.execute(query, values)
-                conn.commit()
+                await cursor.execute(query, values)
+                await conn.commit()
             
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(f"更新学习批次失败: {e}")
             raise DataStorageError(f"更新学习批次失败: {str(e)}")
 
@@ -819,7 +839,7 @@ class DatabaseManager:
             try:
                 conn.close()
                 logger.info(f"已关闭群 {group_id} 的数据库连接")
-            except Exception as e:
+            except aiosqlite.Error as e:
                 logger.error(f"关闭群数据库连接失败: {e}")
         self.group_db_connections.clear()
 
@@ -827,6 +847,6 @@ class DatabaseManager:
             try:
                 self.messages_db_connection.close()
                 logger.info("已关闭全局消息数据库连接")
-            except Exception as e:
+            except aiosqlite.Error as e:
                 logger.error(f"关闭全局消息数据库连接失败: {e}")
             self.messages_db_connection = None

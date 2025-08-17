@@ -391,27 +391,5 @@ class EventType(Enum):
     SERVICE_STATUS_CHANGED = "service_status_changed"
 
 
-# 异常类型
-class PluginError(Exception):
-    """插件基础异常"""
-    pass
-
-
-class ServiceError(PluginError):
-    """服务异常"""
-    pass
-
-
-class AnalysisError(PluginError):
-    """分析异常"""
-    pass
-
-
-class ConfigurationError(PluginError):
-    """配置异常"""
-    pass
-
-
-class DataStorageError(PluginError):
-    """数据存储异常"""
-    pass
+# 异常类型 (从 exceptions.py 导入，避免重复定义)
+from ..exceptions import SelfLearningError, ConfigurationError, DataStorageError, MessageCollectionError, StyleAnalysisError, PersonaUpdateError, ModelAccessError, LearningSchedulerError

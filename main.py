@@ -1,9 +1,8 @@
 """
 AstrBot 自学习插件 - 智能对话风格学习与人格优化
-基于 voice_to_text 插件架构设计
 """
 import os
-import json
+import json # 导入 json 模块
 import asyncio
 import time
 from datetime import datetime, timedelta
@@ -56,8 +55,7 @@ class SelfLearningPlugin(star.Star):
         """初始化所有服务层组件 - 使用工厂模式"""
         try:
             # 初始化工厂管理器
-            self.factory_manager = FactoryManager()
-            self.factory_manager.initialize_factories(self.plugin_config, self.context)
+            self.factory_manager = FactoryManager(self.plugin_config, self.context)
             
             # 获取服务工厂
             self.service_factory = self.factory_manager.get_service_factory()
@@ -71,10 +69,7 @@ class SelfLearningPlugin(star.Star):
             self.progressive_learning = self.service_factory.create_progressive_learning()
             self.intelligent_responder = self.service_factory.create_intelligent_responder()
             self.ml_analyzer = self.service_factory.create_ml_analyzer()
-            self.backup_manager = self.service_factory.create_persona_manager()
-            
-            # 初始化所有服务
-            asyncio.create_task(self.service_factory.initialize_all_services())
+            self.persona_manager = self.service_factory.create_persona_manager() # 更名为 persona_manager
             
             # 初始化内部组件
             self._setup_internal_components()
@@ -86,125 +81,33 @@ class SelfLearningPlugin(star.Star):
             raise SelfLearningError(f"插件初始化失败: {str(e)}") from e
     
     def _setup_internal_components(self):
-        """设置内部组件"""
+        """设置内部组件 - 使用工厂模式"""
+        # 获取组件工厂
+        self.component_factory = self.factory_manager.get_component_factory()
+
         # QQ号过滤器
-        self.qq_filter = self._create_qq_filter()
+        self.qq_filter = self.component_factory.create_qq_filter()
         
         # 消息过滤器
-        self.message_filter = self._create_message_filter()
+        self.message_filter = self.component_factory.create_message_filter(self.context, self.service_factory._llm_client)
         
         # 人格更新器
-        self.persona_updater = self._create_persona_updater()
+        self.persona_updater = self.component_factory.create_persona_updater(self.context, self.service_factory.create_persona_backup_manager())
         
         # 学习调度器
-        self.learning_scheduler = self._create_learning_scheduler()
+        self.learning_scheduler = self.component_factory.create_learning_scheduler(self)
         
         # 异步任务管理
         self.background_tasks = set()
         
         # 启动异步任务
-        self._schedule_background_tasks()
-    
-    def _create_qq_filter(self):
-        """创建QQ号过滤器"""
-        class QQFilter:
-            def __init__(self, target_qq_list):
-                self.target_qq_list = target_qq_list
-            
-            def should_collect_message(self, sender_id: str) -> bool:
-                if not self.target_qq_list:  # 空列表表示收集所有
-                    return True
-                return sender_id in self.target_qq_list
-        
-        return QQFilter(self.plugin_config.target_qq_list)
-    
-    def _create_message_filter(self):
-        """创建消息过滤器"""
-        class MessageFilter:
-            def __init__(self, config, context):
-                self.config = config
-                self.context = context
-            
-            async def is_suitable_for_learning(self, message: str) -> bool:
-                # 基础长度检查
-                if len(message) < self.config.message_min_length:
-                    return False
-                if len(message) > self.config.message_max_length:
-                    return False
-                
-                # 简单内容过滤
-                if message.strip() in ['', '???', '。。。', '...']:
-                    return False
-                
-                return True
-        
-        return MessageFilter(self.plugin_config, self.context)
-    
-    def _create_persona_updater(self):
-        """创建人格更新器"""
-        class PersonaUpdater:
-            def __init__(self, context, backup_manager):
-                self.context = context
-                self.backup_manager = backup_manager
-            
-            async def update_persona_with_style(self, style_analysis, filtered_messages) -> bool:
-                try:
-                    # 这里应该实现实际的人格更新逻辑
-                    logger.info("人格更新功能待完善实现")
-                    return True
-                except Exception as e:
-                    logger.error(f"人格更新失败: {e}")
-                    return False
-        
-        return PersonaUpdater(self.context, self.backup_manager)
-    
-    def _create_learning_scheduler(self):
-        """创建学习调度器"""
-        class LearningScheduler:
-            def __init__(self, plugin_instance):
-                self.plugin = plugin_instance
-                self.is_running = False
-                self._task = None
-            
-            def start(self):
-                if not self.is_running:
-                    self.is_running = True
-                    self._task = asyncio.create_task(self._learning_loop())
-            
-            async def stop(self):
-                if self.is_running:
-                    self.is_running = False
-                    if self._task:
-                        self._task.cancel()
-                        try:
-                            await self._task
-                        except asyncio.CancelledError:
-                            pass
-            
-            async def _learning_loop(self):
-                while self.is_running:
-                    try:
-                        await asyncio.sleep(self.plugin.plugin_config.learning_interval_hours * 3600)
-                        if self.is_running:
-                            await self.plugin._perform_learning_cycle()
-                    except asyncio.CancelledError:
-                        break
-                    except Exception as e:
-                        logger.error(f"学习循环异常: {e}")
-        
-        return LearningScheduler(self)
-    
-    def _schedule_background_tasks(self):
-        """安排后台任务"""
-        if self.plugin_config.enable_auto_learning:
-            task = asyncio.create_task(self._delayed_start_learning())
-            self.background_tasks.add(task)
-            task.add_done_callback(self.background_tasks.discard)
+        asyncio.create_task(self._delayed_start_learning())
     
     async def _delayed_start_learning(self):
         """延迟启动学习服务"""
         try:
             await asyncio.sleep(3)  # 等待初始化完成
+            await self.service_factory.initialize_all_services() # 确保所有服务初始化完成
             self.learning_scheduler.start()
             logger.info("自动学习调度器已启动")
         except Exception as e:
@@ -277,21 +180,33 @@ class SelfLearningPlugin(star.Star):
                 
             logger.info(f"开始处理 {len(raw_messages)} 条消息")
             
-            # 2. 使用弱模型筛选消息
-            filtered_messages = []
-            for msg in raw_messages:
-                if await self.message_filter.is_suitable_for_learning(msg['message']):
-                    filtered_messages.append(msg)
-                    
-            logger.info(f"筛选出 {len(filtered_messages)} 条适合学习的消息")
-            self.learning_stats.filtered_messages += len(filtered_messages)
+            # 2. 使用弱模型筛选消息并进行多维度评分
+            processed_messages = []
+            current_persona_description = self.persona_manager.get_current_persona_description() # 获取当前人格描述
             
-            if not filtered_messages:
+            for msg in raw_messages:
+                message_text = msg['message']
+                
+                # 首先进行基础筛选
+                if await self.multidimensional_analyzer.filter_message_with_llm(message_text, current_persona_description):
+                    # 如果通过筛选，则进行多维度评分
+                    quality_scores = await self.multidimensional_analyzer.evaluate_message_quality_with_llm(
+                        message_text, current_persona_description
+                    )
+                    
+                    # 将评分添加到消息数据中
+                    msg['quality_scores'] = quality_scores
+                    processed_messages.append(msg)
+                    
+            logger.info(f"筛选并评分出 {len(processed_messages)} 条适合学习的消息")
+            self.learning_stats.filtered_messages += len(processed_messages)
+            
+            if not processed_messages:
                 return
                 
-            # 3. 使用强模型分析对话风格
+            # 3. 使用强模型分析对话风格 (使用已评分的消息)
             style_analysis = await self.style_analyzer.analyze_conversation_style(
-                filtered_messages
+                processed_messages
             )
             
             if not style_analysis:
@@ -299,9 +214,10 @@ class SelfLearningPlugin(star.Star):
                 return
                 
             # 4. 更新人格和对话风格
+            original_persona = self.persona_manager.get_current_persona() # 获取原始人格
             update_success = await self.persona_updater.update_persona_with_style(
                 style_analysis,
-                filtered_messages
+                processed_messages # 传递包含评分的消息
             )
             
             if update_success:
@@ -309,6 +225,13 @@ class SelfLearningPlugin(star.Star):
                 self.learning_stats.persona_updates += 1
                 self.learning_stats.last_learning_time = datetime.now().isoformat()
                 self.learning_stats.last_persona_update = datetime.now().isoformat()
+
+                # 执行记忆重放
+                await self.ml_analyzer.replay_memory()
+
+                # 评估学习质量 (传递包含评分的消息)
+                updated_persona = self.persona_manager.get_current_persona() # 获取更新后的人格
+                await self.quality_monitor.evaluate_learning_batch(original_persona, updated_persona, processed_messages)
                 
             # 5. 标记消息为已处理
             await self.message_collector.mark_messages_processed(

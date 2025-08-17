@@ -4,6 +4,7 @@
 import numpy as np
 import json
 import time
+import pandas as pd # 导入 pandas
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
@@ -12,6 +13,8 @@ try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.cluster import KMeans
     from sklearn.metrics.pairwise import cosine_similarity
+    from sklearn.linear_model import LogisticRegression # 导入 LogisticRegression
+    from sklearn.tree import DecisionTreeClassifier # 导入 DecisionTreeClassifier
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -20,14 +23,19 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..exceptions import AnalysisError
+from ..core.llm_client import LLMClient # 导入 LLMClient
+from .database_manager import DatabaseManager # 确保 DatabaseManager 被正确导入
 
 
 class LightweightMLAnalyzer:
-    """轻量级机器学习分析器 - 避免大规模数据分析"""
+    """轻量级机器学习分析器 - 使用简单的ML算法进行数据分析"""
     
-    def __init__(self, config: PluginConfig, db_manager: DatabaseManager):
+    def __init__(self, config: PluginConfig, db_manager: DatabaseManager, 
+                 refine_llm_client: Optional[LLMClient], reinforce_llm_client: Optional[LLMClient]):
         self.config = config
         self.db_manager = db_manager
+        self.refine_llm_client = refine_llm_client
+        self.reinforce_llm_client = reinforce_llm_client
         
         # 设置分析限制以节省资源
         self.max_sample_size = 100  # 最大样本数量
@@ -37,8 +45,151 @@ class LightweightMLAnalyzer:
         
         if not SKLEARN_AVAILABLE:
             logger.warning("scikit-learn未安装，将使用基础统计分析")
+            self.strategy_model = None
+        else:
+            # 初始化策略模型
+            self.strategy_model: Optional[LogisticRegression | DecisionTreeClassifier] = None
+            # 可以在这里选择使用 LogisticRegression 或 DecisionTreeClassifier
+            # self.strategy_model = LogisticRegression(max_iter=1000) 
+            # self.strategy_model = DecisionTreeClassifier(max_depth=5)
         
         logger.info("轻量级ML分析器初始化完成")
+
+    async def replay_memory(self, group_id: str, new_messages: List[Dict[str, Any]], current_persona: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        记忆重放：将历史数据与新数据混合，并交给提炼模型进行处理。
+        这模拟了LLM的“增量微调”过程，通过重新暴露历史数据来巩固学习。
+        """
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法执行记忆重放。")
+            return []
+
+        try:
+            # 获取最近一段时间的历史消息
+            # 假设我们获取过去30天的消息作为历史数据
+            history_messages = await self.db_manager.get_messages_for_replay(group_id, days=30, limit=self.config.max_messages_per_batch * 2)
+            
+            # 将新消息与历史消息混合
+            # 可以根据时间戳进行排序，或者简单地拼接
+            all_messages = history_messages + new_messages
+            # 确保消息不重复，并按时间排序
+            unique_messages = {msg['message_id']: msg for msg in all_messages}
+            sorted_messages = sorted(unique_messages.values(), key=lambda x: x['timestamp'])
+            
+            # 限制总消息数量，避免过大的上下文
+            if len(sorted_messages) > self.config.max_messages_per_batch * 2:
+                sorted_messages = sorted_messages[-self.config.max_messages_per_batch * 2:]
+
+            logger.info(f"执行记忆重放，混合消息数量: {len(sorted_messages)}")
+
+            # 将混合后的消息交给提炼模型进行处理
+            # 这里可以设计一个更复杂的prompt，让LLM从这些消息中提炼新的知识或风格
+            # 示例：让LLM总结这些消息的特点，并与当前人格进行对比
+            messages_text = "\n".join([msg['message'] for msg in sorted_messages])
+            
+            system_prompt = f"""
+你是一个人格提炼专家。你的任务是分析以下消息记录，并结合当前人格描述，提炼出新的、更丰富的人格特征和对话风格。
+重点关注消息中体现的：
+- 语言习惯、用词偏好
+- 情感表达方式
+- 互动模式
+- 知识领域和兴趣点
+- 与当前人格的契合点和差异点
+
+当前人格描述：
+{current_persona['description']}
+
+请以结构化的JSON格式返回提炼结果，例如：
+{{
+    "new_style_features": {{
+        "formal_level": 0.X,
+        "enthusiasm_level": 0.Y,
+        "question_tendency": 0.Z
+    }},
+    "new_topic_preferences": {{
+        "话题A": 0.A,
+        "话题B": 0.B
+    }},
+    "personality_insights": "一段关于人格演变的总结"
+}}
+"""
+            prompt = f"请分析以下消息记录，并结合当前人格，提炼出新的风格和特征：\n\n{messages_text}"
+
+            response = await self.refine_llm_client.chat_completion(
+                prompt=prompt,
+                system_prompt=system_prompt
+            )
+
+            if response and response.text():
+                try:
+                    refined_data = json.loads(response.text().strip())
+                    logger.info(f"记忆重放提炼结果: {refined_data}")
+                    # 这里可以将 refined_data 传递给 PersonaUpdater 进行人格更新
+                    # 或者在 ProgressiveLearning 模块中处理
+                    return refined_data
+                except json.JSONDecodeError:
+                    logger.error(f"提炼模型返回的JSON格式不正确: {response.text()}")
+                    return {}
+            return {}
+        except Exception as e:
+            logger.error(f"执行记忆重放失败: {e}")
+            return {}
+
+    def train_strategy_model(self, X: np.ndarray, y: np.ndarray, model_type: str = "logistic_regression"):
+        """
+        训练策略模型（逻辑回归或决策树）。
+        X: 特征矩阵 (e.g., 消息长度, 情感分数, 相关性分数)
+        y: 目标变量 (e.g., 消息是否被采纳/学习价值高低)
+        """
+        if not SKLEARN_AVAILABLE:
+            logger.warning("scikit-learn未安装，无法训练策略模型。")
+            return
+
+        if model_type == "logistic_regression":
+            self.strategy_model = LogisticRegression(max_iter=1000, random_state=42)
+        elif model_type == "decision_tree":
+            self.strategy_model = DecisionTreeClassifier(max_depth=5, random_state=42)
+        else:
+            logger.error(f"不支持的模型类型: {model_type}")
+            self.strategy_model = None
+            return
+
+        try:
+            self.strategy_model.fit(X, y)
+            logger.info(f"策略模型 ({model_type}) 训练完成。")
+        except Exception as e:
+            logger.error(f"训练策略模型失败: {e}")
+            self.strategy_model = None
+
+    def predict_learning_value(self, features: np.ndarray) -> float:
+        """
+        使用训练好的策略模型预测消息的学习价值。
+        features: 单个消息的特征向量。
+        返回预测的学习价值（0-1之间）。
+        """
+        if not self.strategy_model:
+            logger.warning("策略模型未训练，返回默认学习价值0.5。")
+            return 0.5
+        
+        try:
+            # 确保特征维度匹配训练时的维度
+            if features.ndim == 1:
+                features = features.reshape(1, -1)
+
+            if hasattr(self.strategy_model, 'predict_proba'):
+                # 对于分类模型，通常预测为正类的概率
+                proba = self.strategy_model.predict_proba(features)
+                # 假设正类是索引1
+                return float(proba[0][1])
+            elif hasattr(self.strategy_model, 'predict'):
+                # 对于回归模型，直接预测值
+                return float(self.strategy_model.predict(features)[0])
+            else:
+                logger.warning("策略模型不支持预测概率或直接预测，返回默认学习价值0.5。")
+                return 0.5
+        except Exception as e:
+            logger.error(f"预测学习价值失败: {e}")
+            return 0.5
 
     async def analyze_user_behavior_pattern(self, group_id: str, user_id: str) -> Dict[str, Any]:
         """分析用户行为模式"""
@@ -287,8 +438,48 @@ class LightweightMLAnalyzer:
             logger.error(f"获取群聊最近消息失败: {e}")
             return []
 
-    def _analyze_sentiment_keywords(self, messages: List[Dict[str, Any]]) -> Dict[str, float]:
-        """基于关键词的简单情感分析"""
+    async def _analyze_sentiment_with_llm(self, messages: List[Dict[str, Any]]) -> Dict[str, float]:
+        """使用LLM对消息列表进行情感分析"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM进行情感分析，使用简化算法。")
+            return self._simple_sentiment_analysis(messages)
+
+        messages_text = "\n".join([msg['message'] for msg in messages])
+        
+        prompt = f"""
+请分析以下消息集合的整体情感倾向，并以JSON格式返回积极、消极、中性、疑问、惊讶五种情感的平均置信度分数（0-1之间）。
+
+消息集合：
+{messages_text}
+
+请只返回一个JSON对象，例如：
+{{
+    "积极": 0.8,
+    "消极": 0.1,
+    "中性": 0.1,
+    "疑问": 0.0,
+    "惊讶": 0.0
+}}
+"""
+        try:
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            if response and response.text():
+                try:
+                    sentiment_scores = json.loads(response.text().strip())
+                    # 确保所有分数都在0-1之间
+                    for key, value in sentiment_scores.items():
+                        sentiment_scores[key] = max(0.0, min(float(value), 1.0))
+                    return sentiment_scores
+                except json.JSONDecodeError:
+                    logger.warning(f"LLM响应JSON解析失败，返回简化情感分析。响应内容: {response.text()}")
+                    return self._simple_sentiment_analysis(messages)
+            return self._simple_sentiment_analysis(messages)
+        except Exception as e:
+            logger.warning(f"LLM情感分析失败，使用简化算法: {e}")
+            return self._simple_sentiment_analysis(messages)
+
+    def _simple_sentiment_analysis(self, messages: List[Dict[str, Any]]) -> Dict[str, float]:
+        """基于关键词的简单情感分析（备用）"""
         positive_keywords = ['哈哈', '好的', '谢谢', '赞', '棒', '开心', '高兴', '😊', '👍', '❤️']
         negative_keywords = ['不行', '差', '烦', '无聊', '生气', '😢', '😡', '💔']
         

@@ -124,10 +124,10 @@ class IQualityMonitor(ABC):
 
 
 class IPersonaManager(ABC):
-    """人格管理器接口"""
+    """人格管理器接口 - 负责协调人格的更新、备份和恢复"""
     
     @abstractmethod
-    async def update_persona(self, style_data: Dict[str, Any]) -> bool:
+    async def update_persona(self, style_data: Dict[str, Any], messages: List[MessageData]) -> bool:
         """更新人格"""
         pass
     
@@ -139,6 +139,39 @@ class IPersonaManager(ABC):
     @abstractmethod
     async def restore_persona(self, backup_id: int) -> bool:
         """恢复人格"""
+        pass
+
+
+class IPersonaUpdater(ABC):
+    """人格更新器接口 - 负责执行具体的人格更新逻辑"""
+    
+    @abstractmethod
+    async def update_persona_with_style(self, style_analysis: Dict[str, Any], filtered_messages: List[MessageData]) -> bool:
+        """根据风格分析和筛选过的消息更新人格"""
+        pass
+
+
+class IPersonaBackupManager(ABC):
+    """人格备份管理器接口 - 负责人格的备份和恢复存储"""
+    
+    @abstractmethod
+    async def create_backup_before_update(self, persona_id: str, reason: str) -> int:
+        """在更新前创建人格备份"""
+        pass
+    
+    @abstractmethod
+    async def get_backup(self, backup_id: int) -> Optional[Dict[str, Any]]:
+        """获取指定ID的人格备份"""
+        pass
+    
+    @abstractmethod
+    async def list_backups(self) -> List[Dict[str, Any]]:
+        """列出所有可用的人格备份"""
+        pass
+    
+    @abstractmethod
+    async def delete_backup(self, backup_id: int) -> bool:
+        """删除指定ID的人格备份"""
         pass
 
 

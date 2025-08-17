@@ -91,6 +91,9 @@ class LearningQualityMonitor:
             # 存储历史指标
             self.historical_metrics.append(metrics)
             
+            # 调整阈值
+            await self.adjust_thresholds_based_on_history()
+            
             # 检查是否需要发出警报
             await self._check_quality_alerts(metrics)
             
@@ -198,35 +201,66 @@ class LearningQualityMonitor:
             return 0.5
 
     async def _calculate_emotional_balance(self, messages: List[Dict[str, Any]]) -> float:
-        """计算情感平衡性"""
+        """使用LLM计算情感平衡性"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM计算情感平衡性，使用简化算法。")
+            return self._simple_emotional_balance(messages)
+
+        messages_text = "\n".join([msg['message'] for msg in messages])
+        
+        prompt = f"""
+请分析以下消息集合的情感平衡性，并以JSON格式返回积极和消极情感的置信度分数（0-1之间）。
+
+消息集合：
+{messages_text}
+
+请只返回一个JSON对象，例如：
+{{
+    "积极": 0.8,
+    "消极": 0.2
+}}
+"""
         try:
-            # 简单的情感词汇统计
-            positive_words = ['好', '棒', '赞', '喜欢', '开心', '高兴', '哈哈']
-            negative_words = ['不', '没', '坏', '烦', '讨厌', '生气', '难过']
-            
-            pos_count = 0
-            neg_count = 0
-            
-            for msg in messages:
-                text = msg['message']
-                for word in positive_words:
-                    pos_count += text.count(word)
-                for word in negative_words:
-                    neg_count += text.count(word)
-            
-            total_emotional = pos_count + neg_count
-            if total_emotional == 0:
-                return 0.8  # 中性情感
-            
-            # 计算平衡性（越接近0.5越平衡）
-            pos_ratio = pos_count / total_emotional
-            balance_score = 1.0 - abs(pos_ratio - 0.5) * 2
-            
-            return balance_score
-            
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            if response and response.text():
+                try:
+                    emotional_scores = json.loads(response.text().strip())
+                    # 确保所有分数都在0-1之间
+                    for key, value in emotional_scores.items():
+                        emotional_scores[key] = max(0.0, min(float(value), 1.0))
+                    return emotional_scores.get("积极", 0.0) - emotional_scores.get("消极", 0.0)
+                except json.JSONDecodeError:
+                    logger.warning(f"LLM响应JSON解析失败，返回简化情感平衡性分析。响应内容: {response.text()}")
+                    return self._simple_emotional_balance(messages)
+            return self._simple_emotional_balance(messages)
         except Exception as e:
-            logger.warning(f"情感平衡性计算失败: {e}")
-            return 0.5
+            logger.warning(f"LLM情感平衡性计算失败，使用简化算法: {e}")
+            return self._simple_emotional_balance(messages)
+
+    def _simple_emotional_balance(self, messages: List[Dict[str, Any]]) -> float:
+        """简化的情感平衡性计算（备用）"""
+        positive_words = ['好', '棒', '赞', '喜欢', '开心', '高兴', '哈哈']
+        negative_words = ['不', '没', '坏', '烦', '讨厌', '生气', '难过']
+        
+        pos_count = 0
+        neg_count = 0
+        
+        for msg in messages:
+            text = msg['message']
+            for word in positive_words:
+                pos_count += text.count(word)
+            for word in negative_words:
+                neg_count += text.count(word)
+        
+        total_emotional = pos_count + neg_count
+        if total_emotional == 0:
+            return 0.8  # 中性情感
+        
+        # 计算平衡性（越接近0.5越平衡）
+        pos_ratio = pos_count / total_emotional
+        balance_score = 1.0 - abs(pos_ratio - 0.5) * 2
+        
+        return balance_score
 
     async def _calculate_coherence(self, persona: Dict[str, Any]) -> float:
         """计算逻辑连贯性"""

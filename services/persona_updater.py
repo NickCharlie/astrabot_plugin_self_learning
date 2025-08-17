@@ -10,23 +10,25 @@ import copy
 from astrbot.api.star import Context
 from astrbot.core.provider.provider import Personality
 from ..config import PluginConfig
-from ..core.interfaces import IPersonaManager, AnalysisResult
+from ..core.interfaces import IPersonaUpdater, IPersonaBackupManager, MessageData # 导入 IPersonaUpdater, IPersonaBackupManager, MessageData
+from ..core.llm_client import LLMClient # 导入 LLMClient
 
 
-class PersonaUpdater(IPersonaManager):
+class PersonaUpdater(IPersonaUpdater):
     """
     基于AstrBot框架的人格更新器
     直接操作框架的 curr_personality 属性
     """
     
-    def __init__(self, config: PluginConfig, context: Context, backup_manager=None):
+    def __init__(self, config: PluginConfig, context: Context, backup_manager: IPersonaBackupManager, llm_client: LLMClient):
         self.config = config
         self.context = context
         self.backup_manager = backup_manager
+        self.llm_client = llm_client # 添加 llm_client
         self._logger = logging.getLogger(self.__class__.__name__)
         
-    async def update_persona(self, style_data: Dict[str, Any]) -> bool:
-        """更新当前人格"""
+    async def update_persona_with_style(self, style_analysis: Dict[str, Any], filtered_messages: List[MessageData]) -> bool:
+        """根据风格分析和筛选过的消息更新人格"""
         try:
             # 获取当前提供商
             provider = self.context.get_using_provider()
@@ -42,25 +44,20 @@ class PersonaUpdater(IPersonaManager):
             current_persona = provider.curr_personality
             self._logger.info(f"当前人格: {current_persona.get('name', 'unknown')}")
             
-            # 创建备份
-            if self.backup_manager:
-                backup_id = await self.backup_persona(f"自动备份_更新前_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-                self._logger.info(f"创建人格备份: {backup_id}")
-            
             # 更新人格prompt
-            if 'enhanced_prompt' in style_data:
+            if 'enhanced_prompt' in style_analysis:
                 original_prompt = current_persona.get('prompt', '')
-                enhanced_prompt = self._merge_prompts(original_prompt, style_data['enhanced_prompt'])
+                enhanced_prompt = self._merge_prompts(original_prompt, style_analysis['enhanced_prompt'])
                 current_persona['prompt'] = enhanced_prompt
                 self._logger.info(f"人格prompt已更新，长度: {len(enhanced_prompt)}")
             
             # 更新对话风格模仿
-            if 'filtered_messages' in style_data:
-                await self._update_mood_imitation_dialogs(current_persona, style_data['filtered_messages'])
+            if filtered_messages: # 直接使用传入的 filtered_messages
+                await self._update_mood_imitation_dialogs(current_persona, filtered_messages)
             
             # 更新其他风格属性
-            if 'style_attributes' in style_data:
-                await self._apply_style_attributes(current_persona, style_data['style_attributes'])
+            if 'style_attributes' in style_analysis: # 从 style_analysis 中获取 style_attributes
+                await self._apply_style_attributes(current_persona, style_analysis['style_attributes'])
             
             self._logger.info("人格更新成功")
             return True
@@ -69,39 +66,17 @@ class PersonaUpdater(IPersonaManager):
             self._logger.error(f"人格更新失败: {e}")
             return False
     
-    async def backup_persona(self, reason: str) -> int:
-        """备份当前人格"""
+    async def get_current_persona_description(self) -> Optional[str]:
+        """获取当前人格的描述"""
         try:
             provider = self.context.get_using_provider()
-            if not provider or not provider.curr_personality:
-                raise ValueError("无法获取当前人格进行备份")
-            
-            if self.backup_manager:
-                return await self.backup_manager.create_backup_before_update("system", reason)
-            else:
-                # 简单备份到日志
-                persona_copy = copy.deepcopy(provider.curr_personality)
-                backup_id = int(datetime.now().timestamp())
-                self._logger.info(f"人格备份 {backup_id}: {persona_copy}")
-                return backup_id
-            
+            if provider and provider.curr_personality:
+                return provider.curr_personality.get('prompt', '')
+            return None
         except Exception as e:
-            self._logger.error(f"人格备份失败: {e}")
-            return -1
-    
-    async def restore_persona(self, backup_id: int) -> bool:
-        """恢复人格"""
-        try:
-            if self.backup_manager:
-                return await self.backup_manager.restore_persona_from_backup(backup_id)
-            else:
-                self._logger.warning("没有配置备份管理器，无法恢复人格")
-                return False
-            
-        except Exception as e:
-            self._logger.error(f"人格恢复失败: {e}")
-            return False
-    
+            self._logger.error(f"获取当前人格描述失败: {e}")
+            return None
+
     async def get_current_persona(self) -> Optional[Dict[str, Any]]:
         """获取当前人格信息"""
         try:

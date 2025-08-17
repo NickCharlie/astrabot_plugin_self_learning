@@ -61,11 +61,71 @@
         "hint": "用于初步筛选消息的弱模型。建议使用速度快、成本低的模型如gpt-4o-mini",
         "default": "gpt-4o-mini"
       },
-      "refine_model_name": {
+    "refine_model_name": {
         "description": "提炼模型名称",
-        "type": "string",
+        "type": "string", 
         "hint": "用于深度分析和提炼对话风格的强模型。建议使用能力强的模型如gpt-4o",
         "default": "gpt-4o"
+      },
+      "reinforce_model_name": {
+        "description": "强化模型名称",
+        "type": "string",
+        "hint": "用于强化学习的LLM模型。建议使用能力强的模型",
+        "default": "gpt-4o"
+      },
+      "filter_provider_id": {
+        "description": "筛选模型提供商ID",
+        "type": "string",
+        "hint": "指定用于筛选模型的LLM提供商ID。如果为空，将使用默认提供商",
+        "default": null
+      },
+      "refine_provider_id": {
+        "description": "提炼模型提供商ID",
+        "type": "string",
+        "hint": "指定用于提炼模型的LLM提供商ID。如果为空，将使用默认提供商",
+        "default": null
+      },
+      "reinforce_provider_id": {
+        "description": "强化模型提供商ID",
+        "type": "string",
+        "hint": "指定用于强化模型的LLM提供商ID。如果为空，将使用默认提供商",
+        "default": null
+      },
+      "filter_api_url": {
+        "description": "筛选模型API URL",
+        "type": "string",
+        "hint": "自定义筛选模型的API接口地址",
+        "default": null
+      },
+      "filter_api_key": {
+        "description": "筛选模型API Key",
+        "type": "string",
+        "hint": "自定义筛选模型的API密钥",
+        "default": null
+      },
+      "refine_api_url": {
+        "description": "提炼模型API URL",
+        "type": "string",
+        "hint": "自定义提炼模型的API接口地址",
+        "default": null
+      },
+      "refine_api_key": {
+        "description": "提炼模型API Key",
+        "type": "string",
+        "hint": "自定义提炼模型的API密钥",
+        "default": null
+      },
+      "reinforce_api_url": {
+        "description": "强化模型API URL",
+        "type": "string",
+        "hint": "自定义强化模型的API接口地址",
+        "default": null
+      },
+      "reinforce_api_key": {
+        "description": "强化模型API Key",
+        "type": "string",
+        "hint": "自定义强化模型的API密钥",
+        "default": null
       }
     }
   },

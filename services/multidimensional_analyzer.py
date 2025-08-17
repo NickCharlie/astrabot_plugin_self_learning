@@ -9,12 +9,21 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from collections import defaultdict, Counter
 
+import asyncio # 确保 asyncio 导入
+import re
+import json
+import time
+from typing import Dict, List, Optional, Any, Set
+from datetime import datetime, timedelta
+from dataclasses import dataclass, asdict
+from collections import defaultdict, Counter
+
 from astrbot.api import logger
-from astrbot.api.star import Context
 from astrbot.api.event import AstrMessageEvent
 
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
+from ..core.llm_client import LLMClient # 导入自定义LLMClient
 
 
 @dataclass
@@ -68,9 +77,39 @@ class ContextualPattern:
 class MultidimensionalAnalyzer:
     """多维度分析器"""
     
-    def __init__(self, config: PluginConfig, context: Context):
+    def __init__(self, config: PluginConfig):
         self.config = config
-        self.context = context
+        
+        # 初始化自定义 LLM 客户端
+        self.filter_llm_client: Optional[LLMClient] = None
+        if config.filter_api_url and config.filter_api_key and config.filter_model_name:
+            self.filter_llm_client = LLMClient(
+                api_url=config.filter_api_url,
+                api_key=config.filter_api_key,
+                model_name=config.filter_model_name
+            )
+        else:
+            logger.warning("筛选模型LLM配置不完整，将无法使用LLM进行消息筛选。")
+
+        self.refine_llm_client: Optional[LLMClient] = None
+        if config.refine_api_url and config.refine_api_key and config.refine_model_name:
+            self.refine_llm_client = LLMClient(
+                api_url=config.refine_api_url,
+                api_key=config.refine_api_key,
+                model_name=config.refine_model_name
+            )
+        else:
+            logger.warning("提炼模型LLM配置不完整，将无法使用LLM进行深度分析。")
+
+        self.reinforce_llm_client: Optional[LLMClient] = None
+        if config.reinforce_api_url and config.reinforce_api_key and config.reinforce_model_name:
+            self.reinforce_llm_client = LLMClient(
+                api_url=config.reinforce_api_url,
+                api_key=config.reinforce_api_key,
+                model_name=config.reinforce_model_name
+            )
+        else:
+            logger.warning("强化模型LLM配置不完整，将无法使用LLM进行强化学习。")
         
         # 用户画像存储
         self.user_profiles: Dict[str, UserProfile] = {}
@@ -95,6 +134,121 @@ class MultidimensionalAnalyzer:
         }
         
         logger.info("多维度学习引擎初始化完成")
+
+    async def filter_message_with_llm(self, message_text: str, current_persona_description: str) -> bool:
+        """
+        使用 LLM 对消息进行智能筛选，判断其是否与当前人格匹配、特征鲜明且有学习意义。
+        返回 True 表示消息通过筛选，False 表示不通过。
+        """
+        if not self.filter_llm_client:
+            logger.warning("筛选模型LLM客户端未初始化，跳过LLM消息筛选。")
+            # 如果LLM客户端未初始化，可以根据其他简单规则进行筛选，或者直接返回True/False
+            # 这里暂时返回True，表示不进行LLM筛选
+            return True
+
+        prompt = f"""
+你是一个消息筛选专家，你的任务是判断一条消息是否具有以下特征：
+1. 与当前人格的对话风格和兴趣高度匹配。
+2. 消息内容特征鲜明，不平淡，具有一定的独特性或深度。
+3. 对学习当前人格的对话模式和知识有积极意义。
+
+当前人格描述：
+{current_persona_description}
+
+待筛选消息：
+"{message_text}"
+
+请你根据以上标准，对这条消息进行评估，并给出一个0到1之间的置信度分数。
+0表示完全不符合，1表示完全符合。
+请只返回一个0-1之间的数值，不需要其他说明。
+"""
+        try:
+            response = await self.filter_llm_client.chat_completion(prompt=prompt)
+            if response and response.text():
+                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
+                if numbers:
+                    confidence = min(float(numbers[0]), 1.0)
+                    logger.debug(f"消息筛选置信度: {confidence} (阈值: {self.config.confidence_threshold})")
+                    return confidence >= self.config.confidence_threshold
+            logger.warning(f"LLM筛选模型未返回有效置信度，消息默认不通过筛选。")
+            return False
+        except Exception as e:
+            logger.error(f"LLM消息筛选失败: {e}")
+            return False
+
+    async def evaluate_message_quality_with_llm(self, message_text: str, current_persona_description: str) -> Dict[str, float]:
+        """
+        使用 LLM 对消息进行多维度量化评分。
+        评分维度包括：内容质量、相关性、情感积极性、互动性、学习价值。
+        返回一个包含各维度评分的字典。
+        """
+        if not self.refine_llm_client: # 使用 refine_llm_client 进行更复杂的分析
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM进行多维度量化评分。")
+            return {
+                "content_quality": 0.5,
+                "relevance": 0.5,
+                "emotional_positivity": 0.5,
+                "interactivity": 0.5,
+                "learning_value": 0.5
+            }
+
+        prompt = f"""
+你是一个专业的对话质量评估专家，请根据以下标准对一条消息进行多维度量化评分。
+评分范围为0到1，0表示非常低，1表示非常高。
+
+当前人格描述：
+{current_persona_description}
+
+待评估消息：
+"{message_text}"
+
+请评估以下维度并以JSON格式返回结果：
+{{
+    "content_quality": 0.0-1.0,  // 消息的深度、信息量、原创性、表达清晰度
+    "relevance": 0.0-1.0,        // 与当前对话主题或人格的相关性
+    "emotional_positivity": 0.0-1.0, // 消息的情感倾向（积极程度）
+    "interactivity": 0.0-1.0,    // 消息是否引发或回应了互动（如提问、回应、@他人）
+    "learning_value": 0.0-1.0    // 消息对模型学习当前人格对话模式和知识的潜在贡献
+}}
+
+请确保返回有效的JSON格式，并且只包含JSON对象，不需要其他说明。
+"""
+        try:
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            if response and response.text():
+                try:
+                    scores = json.loads(response.text().strip())
+                    # 确保所有分数都在0-1之间
+                    for key, value in scores.items():
+                        scores[key] = max(0.0, min(float(value), 1.0))
+                    logger.debug(f"消息多维度评分: {scores}")
+                    return scores
+                except json.JSONDecodeError:
+                    logger.warning(f"LLM多维度评分响应JSON解析失败，返回默认评分。响应内容: {response.text()}")
+                    return {
+                        "content_quality": 0.5,
+                        "relevance": 0.5,
+                        "emotional_positivity": 0.5,
+                        "interactivity": 0.5,
+                        "learning_value": 0.5
+                    }
+            logger.warning(f"LLM多维度评分模型未返回有效响应，返回默认评分。")
+            return {
+                "content_quality": 0.5,
+                "relevance": 0.5,
+                "emotional_positivity": 0.5,
+                "interactivity": 0.5,
+                "learning_value": 0.5
+            }
+        except Exception as e:
+            logger.error(f"LLM多维度评分失败: {e}")
+            return {
+                "content_quality": 0.5,
+                "relevance": 0.5,
+                "emotional_positivity": 0.5,
+                "interactivity": 0.5,
+                "learning_value": 0.5
+            }
 
     async def analyze_message_context(self, event: AstrMessageEvent, message_text: str) -> Dict[str, Any]:
         """分析消息的多维度上下文"""
@@ -245,7 +399,46 @@ class MultidimensionalAnalyzer:
         return topic_scores
 
     async def _analyze_emotional_context(self, message_text: str) -> Dict[str, float]:
-        """分析情感上下文"""
+        """使用LLM分析情感上下文"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM分析情感上下文，使用简化算法。")
+            return self._simple_emotional_analysis(message_text)
+
+        try:
+            prompt = f"""
+请分析以下文本的情感倾向，并以JSON格式返回积极、消极、中性、疑问、惊讶五种情感的置信度分数（0-1之间）。
+
+文本内容："{message_text}"
+
+请只返回一个JSON对象，例如：
+{{
+    "积极": 0.8,
+    "消极": 0.1,
+    "中性": 0.1,
+    "疑问": 0.0,
+    "惊讶": 0.0
+}}
+"""
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            
+            if response and response.text():
+                try:
+                    emotion_scores = json.loads(response.text().strip())
+                    # 确保所有分数都在0-1之间
+                    for key, value in emotion_scores.items():
+                        emotion_scores[key] = max(0.0, min(float(value), 1.0))
+                    return emotion_scores
+                except json.JSONDecodeError:
+                    logger.warning(f"LLM响应JSON解析失败，返回简化情感分析。响应内容: {response.text()}")
+                    return self._simple_emotional_analysis(message_text)
+            return self._simple_emotional_analysis(message_text)
+                
+        except Exception as e:
+            logger.warning(f"LLM情感分析失败，使用简化算法: {e}")
+            return self._simple_emotional_analysis(message_text)
+
+    def _simple_emotional_analysis(self, message_text: str) -> Dict[str, float]:
+        """简化的情感分析（备用）"""
         emotions = {
             '积极': ['开心', '高兴', '兴奋', '满意', '喜欢', '爱', '好棒', '太好了', '哈哈', '😄', '😊', '👍'],
             '消极': ['难过', '生气', '失望', '无聊', '烦', '讨厌', '糟糕', '不好', '😭', '😢', '😡'],
@@ -310,7 +503,7 @@ class MultidimensionalAnalyzer:
         return {
             'length': len(message_text),
             'punctuation_ratio': len([c for c in message_text if c in '，。！？；：']) / max(len(message_text), 1),
-            'emoji_count': len(re.findall(r'[😀-🿿]', message_text)),
+            'emoji_count': len(re.findall(r'[😀-]', message_text)),
             'question_count': message_text.count('？') + message_text.count('?'),
             'exclamation_count': message_text.count('！') + message_text.count('!')
         }
@@ -440,12 +633,11 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_formal_level(self, text: str) -> float:
         """使用LLM计算正式程度"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM计算正式程度，使用简化算法。")
+            return self._simple_formal_level(text)
+
         try:
-            # 获取筛选模型
-            provider = self.context.get_using_provider()
-            if not provider:
-                return 0.5  # 默认值
-            
             prompt = f"""
 请分析以下文本的正式程度，从0-1评分，0表示非常随意，1表示非常正式。
 
@@ -461,13 +653,12 @@ class MultidimensionalAnalyzer:
 请只返回一个0-1之间的数值，不需要其他说明。
 """
             
-            response = await provider.text_chat(prompt)
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
             
-            # 提取数值
-            import re
-            numbers = re.findall(r'0\.\d+|1\.0|0', response.strip())
-            if numbers:
-                return min(float(numbers), 1.0)
+            if response and response.text():
+                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
+                if numbers:
+                    return min(float(numbers[0]), 1.0)
             
             return 0.5
             
@@ -488,11 +679,11 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_enthusiasm_level(self, text: str) -> float:
         """使用LLM计算热情程度"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM计算热情程度，使用简化算法。")
+            return self._simple_enthusiasm_level(text)
+
         try:
-            provider = self.context.get_using_provider()
-            if not provider:
-                return 0.5
-            
             prompt = f"""
 请分析以下文本的热情程度，从0-1评分，0表示非常冷淡，1表示非常热情。
 
@@ -508,12 +699,12 @@ class MultidimensionalAnalyzer:
 请只返回一个0-1之间的数值，不需要其他说明。
 """
             
-            response = await provider.text_chat(prompt)
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
             
-            import re
-            numbers = re.findall(r'0\.\d+|1\.0|0', response.strip())
-            if numbers:
-                return min(float(numbers), 1.0)
+            if response and response.text():
+                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
+                if numbers:
+                    return min(float(numbers[0]), 1.0)
             
             return 0.5
             
@@ -529,11 +720,11 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_question_tendency(self, text: str) -> float:
         """使用LLM计算提问倾向"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM计算提问倾向，使用简化算法。")
+            return self._simple_question_tendency(text)
+
         try:
-            provider = self.context.get_using_provider()
-            if not provider:
-                return 0.5
-            
             prompt = f"""
 请分析以下文本的提问倾向，从0-1评分，0表示完全没有疑问，1表示强烈的求知欲和疑问。
 
@@ -549,12 +740,12 @@ class MultidimensionalAnalyzer:
 请只返回一个0-1之间的数值，不需要其他说明。
 """
             
-            response = await provider.text_chat(prompt)
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
             
-            import re
-            numbers = re.findall(r'0\.\d+|1\.0|0', response.strip())
-            if numbers:
-                return min(float(numbers), 1.0)
+            if response and response.text():
+                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
+                if numbers:
+                    return min(float(numbers[0]), 1.0)
             
             return 0.5
             
@@ -570,7 +761,7 @@ class MultidimensionalAnalyzer:
 
     def _calculate_emoji_usage(self, text: str) -> float:
         """计算表情符号使用程度"""
-        emoji_count = len(re.findall(r'[😀-🿿]', text))
+        emoji_count = len(re.findall(r'[😀-]', text))
         return min(emoji_count / max(len(text), 1) * 10, 1.0)
 
     def _calculate_punctuation_style(self, text: str) -> float:
@@ -585,16 +776,16 @@ class MultidimensionalAnalyzer:
         
         profile = self.user_profiles[qq_id]
         
-        # 计算活跃时段
+        # 计算���跃时段
         active_hours = []
         if 'activity_hours' in profile.activity_pattern:
             sorted_hours = sorted(profile.activity_pattern['activity_hours'].items(), 
-                                key=lambda x: x, reverse=True)[1]
+                                key=lambda x: x[1], reverse=True) # 修正排序键
             active_hours = [hour for hour, count in sorted_hours[:3]]
         
         # 计算主要话题
         main_topics = sorted(profile.topic_preferences.items(), 
-                           key=lambda x: x, reverse=True)[:3][1]
+                           key=lambda x: x[1], reverse=True)[:3] # 修正排序键
         
         # 计算社交活跃度
         social_activity = len(self.social_graph.get(qq_id, []))
@@ -618,11 +809,11 @@ class MultidimensionalAnalyzer:
 
     async def _generate_deep_insights(self, profile: UserProfile) -> Dict[str, Any]:
         """使用LLM生成深度用户洞察"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM生成深度用户洞察。")
+            return {"error": "LLM服务不可用"}
+
         try:
-            provider = self.context.get_using_provider()
-            if not provider:
-                return {"error": "LLM服务不可用"}
-            
             # 准备用户数据摘要
             user_data_summary = {
                 'qq_name': profile.qq_name,
@@ -631,10 +822,10 @@ class MultidimensionalAnalyzer:
                 'activity_pattern': {
                     'peak_hours': [k for k, v in sorted(
                         profile.activity_pattern.get('activity_hours', {}).items(),
-                        key=lambda x: x, reverse=True[1]
+                        key=lambda item: item[1], reverse=True
                     )[:3]],
-                    'avg_message_length': sum(profile.activity_pattern.get('message_lengths', )) / 
-                                        max(len(profile.activity_pattern.get('message_lengths', )), 1)[1]
+                    'avg_message_length': sum(profile.activity_pattern.get('message_lengths', [])) / 
+                                        max(len(profile.activity_pattern.get('message_lengths', [])), 1)
                 },
                 'social_connections': len(profile.social_connections)
             }
@@ -660,20 +851,21 @@ class MultidimensionalAnalyzer:
 请确保返回有效的JSON格式。
 """
             
-            response = await provider.text_chat(prompt)
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
             
-            # 尝试解析JSON响应
-            try:
-                insights = json.loads(response.strip())
-                return insights
-            except json.JSONDecodeError:
-                # 如果JSON解析失败，返回简化分析
-                return {
-                    "personality_type": "分析中",
-                    "communication_preference": "待深入分析",
-                    "social_role": "群体成员",
-                    "learning_potential": 0.7
-                }
+            if response and response.text():
+                try:
+                    insights = json.loads(response.text().strip())
+                    return insights
+                except json.JSONDecodeError:
+                    logger.warning(f"LLM响应JSON解析失败，返回简化分析。响应内容: {response.text()}")
+                    return {
+                        "personality_type": "分析中",
+                        "communication_preference": "待深入分析",
+                        "social_role": "群体成员",
+                        "learning_potential": 0.7
+                    }
+            return {"error": "LLM未返回有效响应"}
                 
         except Exception as e:
             logger.warning(f"深度洞察生成失败: {e}")
@@ -681,11 +873,11 @@ class MultidimensionalAnalyzer:
 
     async def _analyze_personality_traits(self, profile: UserProfile) -> Dict[str, float]:
         """分析用户人格特质"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM分析人格特质，使用简化算法。")
+            return self._simple_personality_analysis(profile)
+
         try:
-            provider = self.context.get_using_provider()
-            if not provider:
-                return self._simple_personality_analysis(profile)
-            
             # 获取最近的沟通风格数据
             recent_styles = {}
             for feature, values in profile.communication_style.items():
@@ -708,13 +900,16 @@ class MultidimensionalAnalyzer:
 }}
 """
             
-            response = await provider.text_chat(prompt)
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
             
-            try:
-                traits = json.loads(response.strip())
-                return traits
-            except json.JSONDecodeError:
-                return self._simple_personality_analysis(profile)
+            if response and response.text():
+                try:
+                    traits = json.loads(response.text().strip())
+                    return traits
+                except json.JSONDecodeError:
+                    logger.warning(f"LLM响应JSON解析失败，返回简化人格分析。响应内容: {response.text()}")
+                    return self._simple_personality_analysis(profile)
+            return self._simple_personality_analysis(profile)
                 
         except Exception as e:
             logger.warning(f"人格特质分析失败: {e}")
@@ -785,7 +980,7 @@ class MultidimensionalAnalyzer:
         if 'activity_hours' in profile.activity_pattern:
             hours = profile.activity_pattern['activity_hours']
             if hours:
-                peak_hour = max(hours.items(), key=lambda x: x)[1]
+                peak_hour = max(hours.items(), key=lambda x: x[1])[0] # 修正为获取键
                 activity_summary['peak_hour'] = peak_hour
                 activity_summary['peak_period'] = self._get_time_period(peak_hour)
         

@@ -14,6 +14,7 @@ from .interfaces import (
 )
 from .patterns import StrategyFactory, ServiceRegistry, EventBus
 from ..config import PluginConfig
+from .llm_client import LLMClient # 导入 LLMClient
 
 
 class ServiceFactory(IServiceFactory):
@@ -28,6 +29,9 @@ class ServiceFactory(IServiceFactory):
         
         # 服务实例缓存
         self._service_cache: Dict[str, Any] = {}
+        
+        # 初始化 LLM 客户端
+        self._llm_client = LLMClient(context, context.get_astrbot_config())
     
     def create_message_collector(self) -> IMessageCollector:
         """创建消息收集器"""
@@ -40,7 +44,7 @@ class ServiceFactory(IServiceFactory):
             # 动态导入避免循环依赖
             from ..services.message_collector import MessageCollectorService
             
-            service = MessageCollectorService(self.config, self.context)
+            service = MessageCollectorService(self.config, self.context, self._llm_client, self.create_database_manager()) # 传递 LLMClient 和 DatabaseManager
             self._service_cache[cache_key] = service
             self._registry.register_service("message_collector", service)
             
@@ -61,7 +65,7 @@ class ServiceFactory(IServiceFactory):
         try:
             from ..services.style_analyzer import StyleAnalyzerService
             
-            service = StyleAnalyzerService(self.config, self.context)
+            service = StyleAnalyzerService(self.config, self.context, self._llm_client) # 传递 LLMClient
             self._service_cache[cache_key] = service
             self._registry.register_service("style_analyzer", service)
             
@@ -176,7 +180,7 @@ class ServiceFactory(IServiceFactory):
             # 需要数据库管理器
             db_manager = self.create_database_manager()
             
-            service = IntelligentResponder(self.config, self.context, db_manager)
+            service = IntelligentResponder(self.config, self.context, db_manager, self._llm_client) # 传递 LLMClient
             self._service_cache[cache_key] = service
             
             self._logger.info("创建智能回复器成功")
@@ -194,15 +198,11 @@ class ServiceFactory(IServiceFactory):
             return self._service_cache[cache_key]
         
         try:
-            from ..services.persona_updater import PersonaUpdater
-            from ..services.persona_backup_manager import PersonaBackupManager
-            
             # 创建备份管理器
-            db_manager = self.create_database_manager()
-            backup_manager = PersonaBackupManager(self.config, self.context, db_manager)
+            backup_manager = self.create_persona_backup_manager()
             
-            # 创建人格更新器
-            service = PersonaUpdater(self.config, self.context, backup_manager)
+            # 创建人格更新器 (现在由 ServiceFactory 内部创建)
+            service = self.create_persona_updater()
             self._service_cache[cache_key] = service
             
             self._logger.info("创建人格管理器成功")
@@ -222,7 +222,7 @@ class ServiceFactory(IServiceFactory):
         try:
             from ..services.multidimensional_analyzer import MultidimensionalAnalyzer
             
-            service = MultidimensionalAnalyzer(self.config, self.context)
+            service = MultidimensionalAnalyzer(self.config, self.context, self._llm_client) # 传递 LLMClient
             self._service_cache[cache_key] = service
             
             self._logger.info("创建多维度分析器成功")
@@ -242,7 +242,7 @@ class ServiceFactory(IServiceFactory):
         try:
             from ..services.progressive_learning import ProgressiveLearningService
             
-            service = ProgressiveLearningService(self.config, self.context)
+            service = ProgressiveLearningService(self.config, self.context, self._llm_client) # 传递 LLMClient
             self._service_cache[cache_key] = service
             self._registry.register_service("progressive_learning", service)
             
@@ -253,6 +253,44 @@ class ServiceFactory(IServiceFactory):
             self._logger.error(f"导入渐进式学习服务失败: {e}")
             raise ServiceError(f"创建渐进式学习服务失败: {str(e)}")
     
+    def create_persona_backup_manager(self):
+        """创建人格备份管理器"""
+        cache_key = "persona_backup_manager"
+        
+        if cache_key in self._service_cache:
+            return self._service_cache[cache_key]
+        
+        try:
+            from ..services.persona_backup_manager import PersonaBackupManager
+            db_manager = self.create_database_manager()
+            service = PersonaBackupManager(self.config, self.context, db_manager)
+            self._service_cache[cache_key] = service
+            self._registry.register_service("persona_backup_manager", service)
+            self._logger.info("创建人格备份管理器成功")
+            return service
+        except ImportError as e:
+            self._logger.error(f"导入人格备份管理器失败: {e}")
+            raise ServiceError(f"创建人格备份管理器失败: {str(e)}")
+
+    def create_persona_updater(self) -> IPersonaManager:
+        """创建人格更新器"""
+        cache_key = "persona_updater"
+        
+        if cache_key in self._service_cache:
+            return self._service_cache[cache_key]
+        
+        try:
+            from ..services.persona_updater import PersonaUpdater
+            backup_manager = self.create_persona_backup_manager()
+            service = PersonaUpdater(self.config, self.context, backup_manager, self._llm_client)
+            self._service_cache[cache_key] = service
+            self._registry.register_service("persona_updater", service)
+            self._logger.info("创建人格更新器成功")
+            return service
+        except ImportError as e:
+            self._logger.error(f"导入人格更新器失败: {e}")
+            raise ServiceError(f"创建人格更新器失败: {str(e)}")
+
     def get_service_registry(self) -> ServiceRegistry:
         """获取服务注册表"""
         return self._registry
@@ -342,12 +380,14 @@ class ComponentFactory:
         
         return QQFilter(self.config.target_qq_list)
     
-    def create_message_filter(self, context: Context):
+    def create_message_filter(self, context: Context, llm_client: LLMClient): # 接收 llm_client
         """创建消息过滤器"""
         class MessageFilter:
-            def __init__(self, config, context):
+            def __init__(self, config: PluginConfig, context: Context, llm_client: LLMClient):
                 self.config = config
                 self.context = context
+                self.llm_client = llm_client
+                self._logger = logging.getLogger(self.__class__.__name__)
             
             async def is_suitable_for_learning(self, message: str) -> bool:
                 # 基础长度检查
@@ -360,9 +400,46 @@ class ComponentFactory:
                 if message.strip() in ['', '???', '。。。', '...']:
                     return False
                 
-                return True
+                # 使用 LLM 进行初步筛选
+                try:
+                    current_persona = self.context.get_using_provider().curr_personality.prompt if self.context.get_using_provider() else "默认人格"
+                    
+                    prompt = f"""请判断以下消息是否与当前人格匹配，特征鲜明，且具有学习意义。
+当前人格描述: {current_persona}
+消息内容: "{message}"
+
+请以 JSON 格式返回判断结果，包含 'suitable' (布尔值) 和 'confidence' (0.0-1.0 之间的浮点数)。
+例如: {{"suitable": true, "confidence": 0.9}}"""
+                    
+                    response = await self.llm_client.chat_completion(
+                        provider_id=self.config.filter_provider_id,
+                        model_name=self.config.filter_model_name,
+                        prompt=prompt,
+                        system_prompt="你是一个消息筛选助手，请根据消息内容和当前人格描述，判断消息是否适合用于学习和优化人格。",
+                        temperature=0.2 # 降低温度以获得更确定的结果
+                    )
+                    
+                    if response and response.get('text'):
+                        try:
+                            llm_result = json.loads(response['text'])
+                            suitable = llm_result.get('suitable', False)
+                            confidence = llm_result.get('confidence', 0.0)
+                            
+                            self._logger.debug(f"LLM 筛选结果: message='{message}', suitable={suitable}, confidence={confidence}")
+                            
+                            # 结合置信度阈值进行判断
+                            return suitable and confidence >= self.config.confidence_threshold
+                        except json.JSONDecodeError:
+                            self._logger.warning(f"LLM 返回结果不是有效的 JSON: {response['text']}")
+                            return False # LLM 返回无效 JSON，认为不适合
+                    else:
+                        self._logger.warning("LLM 筛选未返回有效结果。")
+                        return False # LLM 未返回结果，认为不适合
+                except Exception as e:
+                    self._logger.error(f"LLM 筛选消息失败: {e}")
+                    return False # LLM 调用失败，认为不适合
         
-        return MessageFilter(self.config, context)
+        return MessageFilter(self.config, context, llm_client) # 传递 llm_client
     
     def create_learning_scheduler(self, plugin_instance):
         """创建学习调度器"""

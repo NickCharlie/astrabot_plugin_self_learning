@@ -23,6 +23,19 @@ class PluginConfig:
     # 模型配置
     filter_model_name: str = "gpt-4o-mini"  # 筛选模型（弱模型）
     refine_model_name: str = "gpt-4o"       # 提炼模型（强模型）
+    reinforce_model_name: str = "gpt-4o"    # 强化模型（用于强化学习）
+
+    # LLM 提供商 ID
+    filter_provider_id: Optional[str] = None  # 筛选模型使用的提供商ID
+    refine_provider_id: Optional[str] = None  # 提炼模型使用的提供商ID
+    reinforce_provider_id: Optional[str] = None # 强化模型使用的提供商ID
+
+    filter_api_url: Optional[str] = None # 筛选模型API URL
+    filter_api_key: Optional[str] = None # 筛选模型API Key
+    refine_api_url: Optional[str] = None # 提炼模型API URL
+    refine_api_key: Optional[str] = None # 提炼模型API Key
+    reinforce_api_url: Optional[str] = None # 强化模型API URL
+    reinforce_api_key: Optional[str] = None # 强化模型API Key
     
     # 当前人格设置
     current_persona_name: str = "default"
@@ -50,6 +63,7 @@ class PluginConfig:
     enable_intelligent_reply: bool = False   # 启用智能回复
     reply_probability: float = 0.1          # 回复概率
     context_window_size: int = 5            # 上下文窗口大小
+    intelligent_reply_keywords: List[str] = None # 智能回复关键词
     
     # 人格备份设置
     auto_backup_enabled: bool = True        # 启用自动备份
@@ -89,6 +103,10 @@ class PluginConfig:
         # 初始化target_qq_list为空列表
         if self.target_qq_list is None:
             self.target_qq_list = []
+        
+        # 初始化intelligent_reply_keywords为空列表
+        if self.intelligent_reply_keywords is None:
+            self.intelligent_reply_keywords = ['bot', 'ai', '人工智能', '机器人', '助手']
 
     @classmethod
     def create_from_config(cls, config: dict) -> 'PluginConfig':
@@ -107,6 +125,18 @@ class PluginConfig:
             
             filter_model_name=plugin_settings.get('filter_model_name', 'gpt-4o-mini'),
             refine_model_name=plugin_settings.get('refine_model_name', 'gpt-4o'),
+            reinforce_model_name=plugin_settings.get('reinforce_model_name', 'gpt-4o'),
+
+            filter_provider_id=plugin_settings.get('filter_provider_id', None),
+            refine_provider_id=plugin_settings.get('refine_provider_id', None),
+            reinforce_provider_id=plugin_settings.get('reinforce_provider_id', None),
+
+            filter_api_url=plugin_settings.get('filter_api_url', None),
+            filter_api_key=plugin_settings.get('filter_api_key', None),
+            refine_api_url=plugin_settings.get('refine_api_url', None),
+            refine_api_key=plugin_settings.get('refine_api_key', None),
+            reinforce_api_url=plugin_settings.get('reinforce_api_url', None),
+            reinforce_api_key=plugin_settings.get('reinforce_api_key', None),
             
             current_persona_name=plugin_settings.get('current_persona_name', 'default'),
             
@@ -137,6 +167,16 @@ class PluginConfig:
             'target_qq_list': self.target_qq_list,
             'filter_model_name': self.filter_model_name,
             'refine_model_name': self.refine_model_name,
+            'reinforce_model_name': self.reinforce_model_name,
+            'filter_provider_id': self.filter_provider_id,
+            'refine_provider_id': self.refine_provider_id,
+            'reinforce_provider_id': self.reinforce_provider_id,
+            'filter_api_url': self.filter_api_url,
+            'filter_api_key': self.filter_api_key,
+            'refine_api_url': self.refine_api_url,
+            'refine_api_key': self.refine_api_key,
+            'reinforce_api_url': self.reinforce_api_url,
+            'reinforce_api_key': self.reinforce_api_key,
             'current_persona_name': self.current_persona_name,
             'learning_interval_hours': self.learning_interval_hours,
             'min_messages_for_learning': self.min_messages_for_learning,
@@ -175,5 +215,8 @@ class PluginConfig:
             
         if not self.refine_model_name:
             errors.append("提炼模型名称不能为空")
+        
+        if not self.reinforce_model_name:
+            errors.append("强化模型名称不能为空")
             
         return errors

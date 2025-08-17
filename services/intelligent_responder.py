@@ -16,6 +16,17 @@ from ..exceptions import ResponseError
 
 class IntelligentResponder:
     """智能回复器 - 基于用户画像和社交图谱生成智能回复"""
+
+    # 常量定义
+    SOCIAL_STRENGTH_THRESHOLD = 0.5
+    REPLY_PROBABILITY_HIGH_SOCIAL = 0.3
+    SOCIAL_RELATIONS_LIMIT = 5
+    RECENT_MESSAGES_LIMIT = 5
+    PROMPT_MESSAGE_LENGTH_LIMIT = 50
+    PROMPT_RESPONSE_WORD_LIMIT = 100
+    DAILY_RESPONSE_STATS_PERIOD_SECONDS = 86400  # 24小时
+    GROUP_ATMOSPHERE_PERIOD_SECONDS = 3600  # 1小时
+    GROUP_ACTIVITY_HIGH_THRESHOLD = 10
     
     def __init__(self, config: PluginConfig, context: Context, db_manager):
         self.config = config
@@ -50,8 +61,8 @@ class IntelligentResponder:
             
             # 检查社交关系强度
             social_strength = await self._get_social_strength(group_id, sender_id)
-            if social_strength > 0.5:  # 高社交强度用户更容易触发回复
-                return random.random() < 0.3
+            if social_strength > self.SOCIAL_STRENGTH_THRESHOLD:  # 高社交强度用户更容易触发回复
+                return random.random() < self.REPLY_PROBABILITY_HIGH_SOCIAL
             
             return False
             
@@ -66,10 +77,9 @@ class IntelligentResponder:
             return True
         
         # 检查关键词
-        keywords = ['bot', 'ai', '人工智能', '机器人', '助手']
         message_lower = message.lower()
-        for keyword in keywords:
-            if keyword in message_lower:
+        for keyword in self.config.intelligent_reply_keywords:
+            if keyword.lower() in message_lower:
                 return True
         
         return False
@@ -86,8 +96,9 @@ class IntelligentResponder:
                 if relation['from_user'] == user_id or relation['to_user'] == user_id:
                     total_strength += relation['strength']
                     relation_count += 1
-            
-            return total_strength / max(relation_count, 1)
+            if relation_count == 0:
+                return 0.0
+            return total_strength / relation_count
             
         except Exception as e:
             logger.error(f"获取社交强度失败: {e}")
@@ -117,7 +128,7 @@ class IntelligentResponder:
             # 记录回复
             await self._record_response(group_id, sender_id, message_text, response)
             
-            return response.strip()
+            return response.text.strip()
             
         except Exception as e:
             logger.error(f"生成智能回复失败: {e}")
@@ -144,8 +155,8 @@ class IntelligentResponder:
                 if rel['from_user'] == sender_id or rel['to_user'] == sender_id
             ][:5]  # 限制前5个最强关系
             
-            # 获取最近消息(简化实现)
-            context_info['recent_messages'] = await self._get_recent_messages(group_id, 5)
+            # 获取最近的筛选消息
+            context_info['recent_messages'] = await self.db_manager.get_recent_filtered_messages(group_id, 5)
             
             # 分析群氛围
             context_info['group_atmosphere'] = await self._analyze_group_atmosphere(group_id)
@@ -155,30 +166,125 @@ class IntelligentResponder:
         
         return context_info
 
-    async def _get_recent_messages(self, group_id: str, limit: int) -> List[Dict[str, Any]]:
-        """获取最近的消息"""
+    async def _build_enhanced_prompt(self, context_info: Dict[str, Any], message: str) -> str:
+        """构建增强的提示词"""
+        prompt_parts = []
+        
+        # 基础人格设定
+        current_persona = self.config.current_persona or "你是一个友好、智能的AI助手"
+        prompt_parts.append(f"人格设定: {current_persona}")
+        
+        # 用户画像信息
+        if context_info['sender_profile']:
+            profile = context_info['sender_profile']
+            prompt_parts.append(f"""
+用户信息:
+- QQ号: {profile.get('qq_id', '未知')}
+- 昵称: {profile.get('qq_name', '未知')}
+- 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}
+- 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}
+""")
+        
+        # 社交关系
+        if context_info['social_relations']:
+            relations_desc = []
+            for rel in context_info['social_relations'][:3]:
+                relations_desc.append(f"与{rel['to_user']}关系强度{rel['strength']:.2f}")
+            prompt_parts.append(f"社交关系: {', '.join(relations_desc)}")
+        
+        # 群聊氛围
+        atmosphere = context_info['group_atmosphere']
+        prompt_parts.append(f"当前群聊氛围: {atmosphere.get('activity_level', '未知')}活跃度")
+        
+        # 最近消息上下文
+        if context_info['recent_messages']:
+            recent_msgs = []
+            for msg in context_info['recent_messages']:
+                recent_msgs.append(f"{msg['sender_name']}: {msg['message'][:50]} (评分: {msg['quality_scores']})")
+            prompt_parts.append(f"最近对话: {' | '.join(recent_msgs)}")
+        
+        # 当前消息
+        prompt_parts.append(f"当前消息: {message}")
+        
+        # 回复要求
+        prompt_parts.append("""
+请基于以上信息生成一个自然、智能的回复。要求:
+1. 符合设定的人格特征
+2. 考虑用户的沟通风格和偏好
+3. 适应当前的群聊氛围
+4. 回复简洁明了，不超过100字
+5. 语言风格要自然流畅
+""")
+        
+        return "\n\n".join(prompt_parts)
+
+    async def _record_response(self, group_id: str, sender_id: str, original_message: str, response: str):
+        """记录回复信息用于学习"""
         try:
             conn = await self.db_manager.get_group_connection(group_id)
             cursor = conn.cursor()
             
+            # 简化实现：filtered_messages 表用于记录所有经过筛选的消息，包括BOT的回复。
+            # 实际应用中，可能需要为BOT回复创建单独的表以区分。
             cursor.execute('''
-                SELECT sender_id, sender_name, message, timestamp
-                FROM raw_messages 
-                WHERE timestamp > ?
-                ORDER BY timestamp DESC 
-                LIMIT ?
-            ''', (time.time() - 3600, limit))  # 最近1小时的消息
+                INSERT OR IGNORE INTO filtered_messages 
+                (message, sender_id, confidence, filter_reason, timestamp, used_for_learning)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                f"BOT回复: {response}",
+                "bot",
+                1.0, # 假设BOT回复的置信度为1.0
+                f"回复{sender_id}: {original_message[:self.PROMPT_MESSAGE_LENGTH_LIMIT]}", # 使用常量
+                time.time(),
+                False # BOT回复不用于学习，避免循环学习
+            ))
             
-            messages = []
-            for row in cursor.fetchall():
-                messages.append({
-                    'sender_id': row,
-                    'sender_name': row[1],
-                    'message': row,
-                    'timestamp': row
-                })
+            conn.commit()
             
-            return messages
+        except Exception as e:
+            logger.error(f"记录回复失败: {e}")
+
+    async def send_intelligent_response(self, event: AstrMessageEvent):
+        """发送智能回复"""
+        try:
+            if not await self.should_respond(event):
+                return
+            
+            response = await self.generate_intelligent_response(event)
+            
+            if response:
+                # 通过事件系统发送回复
+                await event.send(response)
+                logger.info(f"已发送智能回复: {response[:self.PROMPT_MESSAGE_LENGTH_LIMIT]}...") # 使用常量
+                
+        except Exception as e:
+            logger.error(f"发送智能回复失败: {e}")
+
+    async def get_response_statistics(self, group_id: str) -> Dict[str, Any]:
+        """获取回复统计"""
+        try:
+            conn = await self.db_manager.get_group_connection(group_id)
+            cursor = conn.cursor()
+            
+            # 统计BOT回复次数
+            cursor.execute('''
+                SELECT COUNT(*) 
+                FROM filtered_messages 
+                WHERE sender_id = 'bot' AND timestamp > ?
+            ''', (time.time() - self.DAILY_RESPONSE_STATS_PERIOD_SECONDS,))  # 最近24小时
+            
+            row = cursor.fetchone()
+            daily_responses = row[0] if row else 0
+            
+            return {
+                'daily_responses': daily_responses,
+                'response_rate': self.reply_probability,
+                'intelligent_reply_enabled': self.enable_intelligent_reply
+            }
+            
+        except Exception as e:
+            logger.error(f"获取回复统计失败: {e}")
+            return {}
             
         except Exception as e:
             logger.error(f"获取最近消息失败: {e}")
@@ -196,14 +302,18 @@ class IntelligentResponder:
                        AVG(LENGTH(message)) as avg_length
                 FROM raw_messages 
                 WHERE timestamp > ?
-            ''', (time.time() - 3600,))  # 最近1小时
+            ''', (time.time() - self.GROUP_ATMOSPHERE_PERIOD_SECONDS,))  # 最近1小时
             
             row = cursor.fetchone()
             
+            row = cursor.fetchone()
+            total_messages = row[0] if row else 0
+            avg_length = row[1] if row else 0.0
+            
             return {
-                'activity_level': 'high' if (row if row else 0) > 10 else 'low',
-                'avg_message_length': row if row else 0[1],
-                'total_recent_messages': row if row else 0
+                'activity_level': 'high' if total_messages > self.GROUP_ACTIVITY_HIGH_THRESHOLD else 'low',
+                'avg_message_length': avg_length,
+                'total_recent_messages': total_messages
             }
             
         except Exception as e:
@@ -314,7 +424,7 @@ class IntelligentResponder:
                 SELECT COUNT(*) 
                 FROM filtered_messages 
                 WHERE sender_id = 'bot' AND timestamp > ?
-            ''', (time.time() - 86400,))  # 最近24小时
+            ''', (time.time() - self.DAILY_RESPONSE_STATS_PERIOD_SECONDS,))  # 最近24小时
             
             daily_responses = cursor.fetchone() if cursor.fetchone() else 0
             

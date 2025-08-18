@@ -238,7 +238,8 @@ class ServiceFactory(IServiceFactory):
         try:
             from ..services.multidimensional_analyzer import MultidimensionalAnalyzer
             
-            service = MultidimensionalAnalyzer(self.config, self.context)  # Only pass config and context
+            db_manager = self.create_database_manager() # 获取 DatabaseManager 实例
+            service = MultidimensionalAnalyzer(self.config, db_manager, self.context)  # 传递 db_manager 和 context
             self._service_cache[cache_key] = service
             
             self._logger.info("创建多维度分析器成功")
@@ -502,8 +503,9 @@ class LearningScheduler:
 class ComponentFactory:
     """组件工厂 - 创建轻量级组件"""
     
-    def __init__(self, config: PluginConfig):
+    def __init__(self, config: PluginConfig, service_factory: ServiceFactory):
         self.config = config
+        self.service_factory = service_factory
         self._logger = logger
     
     def create_qq_filter(self):
@@ -521,8 +523,7 @@ class ComponentFactory:
     def create_persona_updater(self, context: Context, backup_manager):
         """创建人格更新器"""
         from ..services.persona_updater import PersonaUpdater as ActualPersonaUpdater # 导入实际的 PersonaUpdater
-        service_factory = FactoryManager().get_service_factory() # 获取 ServiceFactory 实例
-        llm_client = service_factory.create_llm_client() # 通过工厂方法获取 LLMClient 实例
+        llm_client = self.service_factory.create_llm_client() # 通过注入的 service_factory 获取 LLMClient 实例
         return ActualPersonaUpdater(self.config, context, backup_manager, llm_client) # 传递 config 和 llm_client
 
 
@@ -542,7 +543,7 @@ class FactoryManager:
     def initialize_factories(self, config: PluginConfig, context: Context):
         """初始化工厂"""
         self._service_factory = ServiceFactory(config, context)
-        self._component_factory = ComponentFactory(config)
+        self._component_factory = ComponentFactory(config, self._service_factory) # 注入 service_factory
     
     def get_service_factory(self) -> ServiceFactory:
         """获取服务工厂"""

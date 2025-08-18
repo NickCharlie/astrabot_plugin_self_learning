@@ -78,10 +78,10 @@ class ContextualPattern:
 class MultidimensionalAnalyzer:
     """多维度分析器"""
     
-    def __init__(self, config: PluginConfig, context=None): # 添加 context 参数
+    def __init__(self, config: PluginConfig, db_manager: DatabaseManager, context=None): # 添加 db_manager 参数
         self.config = config
         self.context = context
-        self.db_manager: DatabaseManager = context.get_service("database_manager") # 获取 DatabaseManager 实例
+        self.db_manager: DatabaseManager = db_manager # 直接传入 DatabaseManager 实例
         
         # 初始化自定义 LLM 客户端
         self.filter_llm_client: Optional[LLMClient] = None

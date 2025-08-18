@@ -278,7 +278,7 @@ class IntelligentResponder:
         """获取回复统计"""
         try:
             conn = await self.db_manager.get_group_connection(group_id)
-            cursor = conn.cursor()
+            cursor = await conn.cursor()
             
             # 统计BOT回复次数
             await cursor.execute('''
@@ -304,7 +304,7 @@ class IntelligentResponder:
         """分析群氛围"""
         try:
             conn = await self.db_manager.get_group_connection(group_id)
-            cursor = await conn.cursor() # 添加 await
+            cursor = await conn.cursor()
             
             # 分析最近消息的情感倾向
             await cursor.execute('''
@@ -333,7 +333,7 @@ class IntelligentResponder:
         """分析群聊氛围"""
         try:
             conn = await self.db_manager.get_group_connection(group_id)
-            cursor = conn.cursor()
+            cursor = await conn.cursor()
             
             # 分析最近消息的情感倾向
             await cursor.execute('''

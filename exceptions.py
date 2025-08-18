@@ -41,3 +41,23 @@ class DataStorageError(SelfLearningError):
 class LearningSchedulerError(SelfLearningError):
     """学习调度异常"""
     pass
+
+
+class LearningError(SelfLearningError):
+    """学习相关异常"""
+    pass
+
+
+class ServiceError(SelfLearningError):
+    """服务相关异常"""
+    pass
+
+
+class ResponseError(SelfLearningError):
+    """响应相关异常"""
+    pass
+
+
+class BackupError(SelfLearningError):
+    """备份相关异常"""
+    pass

@@ -10,7 +10,7 @@ import copy
 from astrbot.api.star import Context
 from astrbot.core.provider.provider import Personality
 from ..config import PluginConfig
-from ..core.interfaces import IPersonaUpdater, IPersonaBackupManager, MessageData # 导入 IPersonaUpdater, IPersonaBackupManager, MessageData
+from ..core.interfaces import IPersonaUpdater, IPersonaBackupManager, MessageData, AnalysisResult # 导入 IPersonaUpdater, IPersonaBackupManager, MessageData, AnalysisResult
 from ..core.llm_client import LLMClient # 导入 LLMClient
 
 

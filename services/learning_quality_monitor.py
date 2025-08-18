@@ -38,9 +38,10 @@ class LearningAlert:
 class LearningQualityMonitor:
     """学习质量监控器"""
     
-    def __init__(self, config: PluginConfig, context: Context):
+    def __init__(self, config: PluginConfig, context: Context, llm_client):
         self.config = config
         self.context = context
+        self._llm_client = llm_client # 添加 llm_client
         
         # 监控阈值
         self.consistency_threshold = 0.7    # 一致性阈值
@@ -108,9 +109,8 @@ class LearningQualityMonitor:
                                    updated_persona: Dict[str, Any]) -> float:
         """计算人格一致性得分"""
         try:
-            # 获取LLM提供商进行分析
-            llm_provider = self.context.get_using_provider()
-            if not llm_provider:
+            if not self._llm_client:
+                logger.warning("LLM客户端未初始化，无法使用LLM计算一致性，使用默认值。")
                 return 0.5
             
             prompt = f"""
@@ -132,7 +132,7 @@ class LearningQualityMonitor:
                 """
             
             # 调用模型分析
-            response = await llm_provider.text_chat(prompt)
+            response = await self._llm_client.chat_completion(prompt=prompt)
             
             # 尝试提取数值
             import re
@@ -202,8 +202,8 @@ class LearningQualityMonitor:
 
     async def _calculate_emotional_balance(self, messages: List[Dict[str, Any]]) -> float:
         """使用LLM计算情感平衡性"""
-        if not self.refine_llm_client:
-            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM计算情感平衡性，使用简化算法。")
+        if not self._llm_client:
+            logger.warning("LLM客户端未初始化，无法使用LLM计算情感平衡性，使用简化算法。")
             return self._simple_emotional_balance(messages)
 
         messages_text = "\n".join([msg['message'] for msg in messages])
@@ -221,14 +221,19 @@ class LearningQualityMonitor:
                 }}
                 """
         try:
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            response = await self._llm_client.chat_completion(prompt=prompt)
             if response and response.text():
                 try:
                     emotional_scores = json.loads(response.text().strip())
                     # 确保所有分数都在0-1之间
                     for key, value in emotional_scores.items():
                         emotional_scores[key] = max(0.0, min(float(value), 1.0))
-                    return emotional_scores.get("积极", 0.0) - emotional_scores.get("消极", 0.0)
+                    
+                    # 计算情感平衡性：积极情感减去消极情感，再调整到0-1范围
+                    positive_score = emotional_scores.get("积极", 0.5)
+                    negative_score = emotional_scores.get("消极", 0.5)
+                    balance_score = (positive_score - negative_score + 1.0) / 2.0  # 转换到0-1范围
+                    return max(0.0, min(balance_score, 1.0))
                 except json.JSONDecodeError:
                     logger.warning(f"LLM响应JSON解析失败，返回简化情感平衡性分析。响应内容: {response.text()}")
                     return self._simple_emotional_balance(messages)

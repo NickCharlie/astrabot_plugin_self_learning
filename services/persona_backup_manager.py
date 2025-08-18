@@ -11,6 +11,7 @@ from astrbot.api.star import Context
 
 from ..config import PluginConfig
 from ..exceptions import BackupError
+from .database_manager import DatabaseManager
 
 
 class PersonaBackupManager:
@@ -141,6 +142,8 @@ class PersonaBackupManager:
         """恢复人格数据"""
         try:
             # 这里需要调用AstrBot框架的API来设置人格
+            # TODO: 实现具体的人格设置逻辑
+
             # 目前使用简化实现
             provider = self.context.get_using_provider()
             if provider and hasattr(provider, 'curr_personality'):

@@ -28,10 +28,11 @@ class IntelligentResponder:
     GROUP_ATMOSPHERE_PERIOD_SECONDS = 3600  # 1小时
     GROUP_ACTIVITY_HIGH_THRESHOLD = 10
     
-    def __init__(self, config: PluginConfig, context: Context, db_manager):
+    def __init__(self, config: PluginConfig, context: Context, db_manager, llm_client):
         self.config = config
         self.context = context
         self.db_manager = db_manager
+        self.llm_client = llm_client # 添加 llm_client
         
         # 回复策略配置
         self.enable_intelligent_reply = config.enable_intelligent_reply
@@ -121,14 +122,27 @@ class IntelligentResponder:
             provider = self.context.get_using_provider()
             if not provider:
                 logger.warning("未找到可用的LLM提供商")
+                logger.warning("未找到可用的LLM提供商")
                 return None
             
-            response = await provider.text_chat(enhanced_prompt)
+            # 使用传入的 llm_client 进行聊天补全
+            response = await self.llm_client.chat_completion(
+                api_url=self.config.refine_api_url, # 使用 refine_api_url
+                api_key=self.config.refine_api_key, # 使用 refine_api_key
+                model_name=self.config.refine_model_name, # 使用 refine_model_name
+                prompt=enhanced_prompt,
+                system_prompt=self.config.intelligent_responder_system_prompt, # 使用配置中的系统提示
+                temperature=self.config.intelligent_responder_temperature, # 使用配置中的温度
+                max_tokens=self.PROMPT_RESPONSE_WORD_LIMIT # 限制回复长度
+            )
             
-            # 记录回复
-            await self._record_response(group_id, sender_id, message_text, response)
-            
-            return response.text.strip()
+            if response and response.get('text'):
+                # 记录回复
+                await self._record_response(group_id, sender_id, message_text, response['text'])
+                return response['text'].strip()
+            else:
+                logger.warning("LLM 未返回有效回复。")
+                return None
             
         except Exception as e:
             logger.error(f"生成智能回复失败: {e}")
@@ -285,10 +299,35 @@ class IntelligentResponder:
         except Exception as e:
             logger.error(f"获取回复统计失败: {e}")
             return {}
+
+    async def _analyze_group_atmosphere(self, group_id: str) -> Dict[str, Any]:
+        """分析群氛围"""
+        try:
+            conn = await self.db_manager.get_group_connection(group_id)
+            cursor = await conn.cursor() # 添加 await
+            
+            # 分析最近消息的情感倾向
+            await cursor.execute('''
+                SELECT COUNT(*) as total_messages,
+                       AVG(LENGTH(message)) as avg_length
+                FROM raw_messages 
+                WHERE timestamp > ?
+            ''', (time.time() - self.GROUP_ATMOSPHERE_PERIOD_SECONDS,))  # 最近1小时
+            
+            row = await cursor.fetchone()
+            
+            total_messages = row[0] if row else 0
+            avg_length = row[1] if row else 0.0
+            
+            return {
+                'activity_level': 'high' if total_messages > self.GROUP_ACTIVITY_HIGH_THRESHOLD else 'low',
+                'avg_message_length': avg_length,
+                'total_recent_messages': total_messages
+            }
             
         except Exception as e:
-            logger.error(f"获取最近消息失败: {e}")
-            return []
+            logger.error(f"分析群氛围失败: {e}")
+            return {'activity_level': 'unknown'}
 
     async def _analyze_group_atmosphere(self, group_id: str) -> Dict[str, Any]:
         """分析群聊氛围"""

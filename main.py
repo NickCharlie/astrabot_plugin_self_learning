@@ -14,6 +14,7 @@ from astrbot.api.event import filter
 import astrbot.api.star as star
 from astrbot.api.star import register, Context
 from astrbot.api import logger, AstrBotConfig
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .config import PluginConfig
 from .core.factory import FactoryManager
@@ -42,7 +43,7 @@ class SelfLearningPlugin(star.Star):
         
         # 初始化插件配置
         # 获取插件数据目录，并传递给 PluginConfig
-        plugin_data_dir = self.context.get_data_dir()
+        plugin_data_dir = os.path.join(get_astrbot_data_path(), "plugins", "astrabot_plugin_self_learning")
         self.plugin_config = PluginConfig.create_from_config(self.config, data_dir=plugin_data_dir)
         
         # 确保数据目录存在
@@ -66,7 +67,8 @@ class SelfLearningPlugin(star.Star):
         """初始化所有服务层组件 - 使用工厂模式"""
         try:
             # 初始化工厂管理器
-            self.factory_manager = FactoryManager(self.plugin_config, self.context)
+            self.factory_manager = FactoryManager()
+            self.factory_manager.initialize_factories(self.plugin_config, self.context)
             
             # 获取服务工厂
             self.service_factory = self.factory_manager.get_service_factory()
@@ -103,10 +105,13 @@ class SelfLearningPlugin(star.Star):
         self.qq_filter = self.component_factory.create_qq_filter()
         
         # 消息过滤器
-        self.message_filter = self.component_factory.create_message_filter(self.context, self.service_factory._llm_client)
+        llm_client_instance = self.service_factory.create_llm_client() # 通过 ServiceFactory 获取 LLMClient 实例
+        self.message_filter = self.component_factory.create_message_filter(self.context, llm_client_instance)
         
         # 人格更新器
-        self.persona_updater = self.component_factory.create_persona_updater(self.context, self.service_factory.create_persona_backup_manager())
+        # PersonaUpdater 的创建现在需要 backup_manager，它是一个服务，也应该通过 ServiceFactory 获取
+        persona_backup_manager_instance = self.service_factory.create_persona_backup_manager()
+        self.persona_updater = self.component_factory.create_persona_updater(self.context, persona_backup_manager_instance)
         
         # 学习调度器
         self.learning_scheduler = self.component_factory.create_learning_scheduler(self)

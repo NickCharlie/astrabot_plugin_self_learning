@@ -13,6 +13,7 @@ from astrbot.api.star import Context
 
 from ..config import PluginConfig
 from ..exceptions import LearningError
+from .database_manager import DatabaseManager # 导入 DatabaseManager
 from .message_collector import MessageCollectorService
 from .multidimensional_analyzer import MultidimensionalAnalyzer
 from .style_analyzer import StyleAnalyzerService
@@ -35,20 +36,25 @@ class LearningSession:
 class ProgressiveLearningService:
     """渐进式学习服务"""
     
-    def __init__(self, config: PluginConfig, context: Context):
+    def __init__(self, config: PluginConfig, context: Context, 
+                 message_collector: MessageCollectorService,
+                 multidimensional_analyzer: MultidimensionalAnalyzer,
+                 style_analyzer: StyleAnalyzerService,
+                 quality_monitor: LearningQualityMonitor):
         self.config = config
         self.context = context
+        self.db_manager: DatabaseManager = context.get_service("database_manager") # 获取 DatabaseManager 实例
         
-        # 初始化各个组件服务
-        self.message_collector = MessageCollectorService(config, context)
-        self.multidimensional_analyzer = MultidimensionalAnalyzer(config, context)
-        self.style_analyzer = StyleAnalyzerService(config, context)
-        self.quality_monitor = LearningQualityMonitor(config, context)
+        # 注入各个组件服务
+        self.message_collector = message_collector
+        self.multidimensional_analyzer = multidimensional_analyzer
+        self.style_analyzer = style_analyzer
+        self.quality_monitor = quality_monitor
         
         # 学习状态
         self.learning_active = False
         self.current_session: Optional[LearningSession] = None
-        self.learning_sessions: List[LearningSession] = []
+        self.learning_sessions: List[LearningSession] = [] # 历史学习会话，可以从数据库加载
         
         # 学习控制参数
         self.batch_size = config.learning_batch_size
@@ -57,7 +63,18 @@ class ProgressiveLearningService:
         
         logger.info("渐进式学习服务初始化完成")
 
-    async def start_learning(self) -> bool:
+    async def start(self):
+        """服务启动时加载历史学习会话"""
+        # 假设每个群组有独立的学习会话，这里需要一个 group_id
+        # 为了简化，暂时假设加载一个默认的或全局的学习会话
+        # 实际应用中，可能需要根据当前处理的群组ID来加载
+        default_group_id = "global_learning" # 或者从配置中获取
+        # 这里可以加载所有历史会话，或者只加载最近的N个
+        # 为了简化，我们暂时不从数据库加载历史会话列表，只在每次会话结束时保存
+        # 如果需要加载历史会话，需要 DatabaseManager 提供 load_all_learning_sessions 方法
+        logger.info("渐进式学习服务启动，准备开始学习。")
+
+    async def start_learning(self, group_id: str) -> bool:
         """启动学习流程"""
         try:
             if self.learning_active:
@@ -72,11 +89,13 @@ class ProgressiveLearningService:
                 session_id=session_id,
                 start_time=datetime.now().isoformat()
             )
+            # 保存新的学习会话到数据库
+            await self.db_manager.save_learning_session(group_id, self.current_session.__dict__)
             
             logger.info(f"开始学习会话: {session_id}")
             
             # 启动学习循环
-            asyncio.create_task(self._learning_loop())
+            asyncio.create_task(self._learning_loop(group_id))
             
             return True
             
@@ -91,11 +110,15 @@ class ProgressiveLearningService:
         
         if self.current_session:
             self.current_session.end_time = datetime.now().isoformat()
-            self.learning_sessions.append(self.current_session)
+            self.current_session.success = True # 假设正常停止即成功
+            # 保存更新后的学习会话到数据库
+            default_group_id = "global_learning" # 或者从配置中获取
+            await self.db_manager.save_learning_session(default_group_id, self.current_session.__dict__)
+            self.learning_sessions.append(self.current_session) # 仍然添加到内存列表
             logger.info(f"学习会话结束: {self.current_session.session_id}")
             self.current_session = None
 
-    async def _learning_loop(self):
+    async def _learning_loop(self, group_id: str):
         """主学习循环"""
         while self.learning_active:
             try:
@@ -107,7 +130,7 @@ class ProgressiveLearningService:
                     break
                 
                 # 执行一个学习批次
-                await self._execute_learning_batch()
+                await self._execute_learning_batch(group_id)
                 
                 # 等待下一个学习周期
                 await asyncio.sleep(self.learning_interval)
@@ -116,7 +139,7 @@ class ProgressiveLearningService:
                 logger.error(f"学习循环异常: {e}")
                 await asyncio.sleep(60)  # 异常时等待1分钟
 
-    async def _execute_learning_batch(self):
+    async def _execute_learning_batch(self, group_id: str):
         """执行一个学习批次"""
         try:
             batch_start_time = datetime.now()
@@ -141,7 +164,7 @@ class ProgressiveLearningService:
                 return
             
             # 3. 使用风格分析器深度分析
-            style_analysis = await self.style_analyzer.analyze_conversation_style(filtered_messages)
+            style_analysis = await self.style_analyzer.analyze_conversation_style(group_id, filtered_messages) # 传入 group_id
             
             # 4. 获取当前人格设置
             current_persona = await self._get_current_persona()
@@ -163,11 +186,14 @@ class ProgressiveLearningService:
             # 7. 标记消息为已处理
             await self._mark_messages_processed(unprocessed_messages)
             
-            # 8. 更新学习会话统计
+            # 8. 更新学习会话统计并持久化
             if self.current_session:
                 self.current_session.messages_processed += len(unprocessed_messages)
                 self.current_session.filtered_messages += len(filtered_messages)
                 self.current_session.quality_score = quality_metrics.consistency_score
+                # 每次批次结束都保存当前会话状态
+                default_group_id = "global_learning" # 或者从配置中获取
+                await self.db_manager.save_learning_session(default_group_id, self.current_session.__dict__)
             
             # 记录批次耗时
             batch_duration = (datetime.now() - batch_start_time).total_seconds()
@@ -176,6 +202,67 @@ class ProgressiveLearningService:
         except Exception as e:
             logger.error(f"学习批次执行失败: {e}")
             raise LearningError(f"学习批次执行失败: {str(e)}")
+
+    # async def _execute_learning_batch(self):
+    #     """执行一个学习批次"""
+    #     try:
+    #         batch_start_time = datetime.now()
+            
+    #         # 1. 获取未处理的消息
+    #         unprocessed_messages = await self.message_collector.get_unprocessed_messages(
+    #             limit=self.batch_size
+    #         )
+            
+    #         if not unprocessed_messages:
+    #             logger.debug("没有未处理的消息，跳过此批次")
+    #             return
+            
+    #         logger.info(f"开始处理 {len(unprocessed_messages)} 条消息")
+            
+    #         # 2. 使用多维度分析器筛选消息
+    #         filtered_messages = await self._filter_messages_with_context(unprocessed_messages)
+            
+    #         if not filtered_messages:
+    #             logger.debug("没有通过筛选的消息")
+    #             await self._mark_messages_processed(unprocessed_messages)
+    #             return
+            
+    #         # 3. 使用风格分析器深度分析
+    #         style_analysis = await self.style_analyzer.analyze_conversation_style(filtered_messages)
+            
+    #         # 4. 获取当前人格设置
+    #         current_persona = await self._get_current_persona()
+            
+    #         # 5. 质量监控评估
+    #         quality_metrics = await self.quality_monitor.evaluate_learning_batch(
+    #             current_persona, 
+    #             await self._generate_updated_persona(current_persona, style_analysis),
+    #             filtered_messages
+    #         )
+            
+    #         # 6. 根据质量评估决定是否应用更新
+    #         if quality_metrics.consistency_score >= self.quality_threshold:
+    #             await self._apply_learning_updates(style_analysis, filtered_messages)
+    #             logger.info(f"学习更新已应用，质量得分: {quality_metrics.consistency_score:.3f}")
+    #         else:
+    #             logger.warning(f"学习质量不达标，跳过更新，得分: {quality_metrics.consistency_score:.3f}")
+            
+    #         # 7. 标记消息为已处理
+    #         await self._mark_messages_processed(unprocessed_messages)
+            
+    #         # 8. 更新学习会话统计
+    #         if self.current_session:
+    #             self.current_session.messages_processed += len(unprocessed_messages)
+    #             self.current_session.filtered_messages += len(filtered_messages)
+    #             self.current_session.quality_score = quality_metrics.consistency_score
+            
+    #         # 记录批次耗时
+    #         batch_duration = (datetime.now() - batch_start_time).total_seconds()
+    #         logger.info(f"学习批次完成，耗时: {batch_duration:.2f}秒")
+            
+    #     except Exception as e:
+    #         logger.error(f"学习批次执行失败: {e}")
+    #         raise LearningError(f"学习批次执行失败: {str(e)}")
 
     async def _filter_messages_with_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """使用多维度分析进行智能筛选"""

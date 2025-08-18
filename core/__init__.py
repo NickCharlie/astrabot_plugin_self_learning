@@ -10,7 +10,8 @@ from .interfaces import (
     IDataStorage, IObserver, IEventPublisher, IServiceFactory, IAsyncService, 
     IMLAnalyzer, IIntelligentResponder, ServiceLifecycle, MessageData, 
     AnalysisResult, LearningStrategyType, AnalysisType, EventType, 
-    PluginError, ServiceError, AnalysisError, ConfigurationError, DataStorageError
+    ServiceError, StyleAnalysisError, ConfigurationError, DataStorageError, PersonaUpdateError
+
 )
 
 __all__ = [
@@ -44,7 +45,6 @@ __all__ = [
     'LearningStrategyType',
     'AnalysisType',
     'EventType',
-    'PluginError',
     'ServiceError',
     'AnalysisError',
     'ConfigurationError',

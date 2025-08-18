@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Any, Type
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from astrbot.api import logger # 导入 logger
 
 from .interfaces import (
     IObserver, IEventPublisher, IServiceFactory, ILearningStrategy, 

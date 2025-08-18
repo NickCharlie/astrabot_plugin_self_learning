@@ -12,6 +12,7 @@ from astrbot.api.star import Context
 
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError, ModelAccessError
+from .database_manager import DatabaseManager # 导入 DatabaseManager
 
 
 @dataclass
@@ -39,9 +40,10 @@ class StyleEvolution:
 class StyleAnalyzerService:
     """风格分析服务"""
     
-    def __init__(self, config: PluginConfig, context: Context):
+    def __init__(self, config: PluginConfig, context: Context, database_manager: DatabaseManager):
         self.config = config
         self.context = context
+        self.db_manager = database_manager # 注入 DatabaseManager 实例
         
         # 风格演化历史
         self.style_evolution_history: List[StyleEvolution] = []
@@ -51,7 +53,20 @@ class StyleAnalyzerService:
         
         logger.info("风格分析服务初始化完成")
 
-    async def analyze_conversation_style(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def start(self):
+        """服务启动时加载基准风格档案"""
+        # 假设每个群组有独立的风格档案，这里需要一个 group_id
+        # 为了简化，暂时假设加载一个默认的或全局的风格档案
+        # 实际应用中，可能需要根据当前处理的群组ID来加载
+        default_group_id = "global_style" # 或者从配置中获取
+        loaded_profile_data = await self.db_manager.load_style_profile(default_group_id, "baseline_style_profile")
+        if loaded_profile_data:
+            self.baseline_style = StyleProfile(**loaded_profile_data)
+            logger.info("已从数据库加载基准风格档案。")
+        else:
+            logger.info("未找到基准风格档案，将从零开始。")
+
+    async def analyze_conversation_style(self, group_id: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """分析对话风格，使用强模型进行深度分析"""
         try:
             if not messages:
@@ -77,12 +92,13 @@ class StyleAnalyzerService:
             if self.baseline_style:
                 style_evolution = self._detect_style_evolution(self.baseline_style, style_profile)
             
-            # 更新基准风格
+            # 更新基准风格并持久化
             self.baseline_style = style_profile
+            await self.db_manager.save_style_profile(group_id, {"profile_name": "baseline_style_profile", **self.baseline_style.__dict__})
             
             return {
                 'style_analysis': style_analysis,
-                'style_profile': style_profile.__dict__,
+                'style_profile': self.baseline_style.__dict__, # 返回更新后的基准风格
                 'style_evolution': style_evolution.__dict__ if style_evolution else None,
                 'message_count': len(messages),
                 'analysis_timestamp': datetime.now().isoformat(),

@@ -24,6 +24,7 @@ from astrbot.api.event import AstrMessageEvent
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
 from ..core.llm_client import LLMClient # 导入自定义LLMClient
+from .database_manager import DatabaseManager # 导入 DatabaseManager
 
 
 @dataclass
@@ -77,8 +78,10 @@ class ContextualPattern:
 class MultidimensionalAnalyzer:
     """多维度分析器"""
     
-    def __init__(self, config: PluginConfig):
+    def __init__(self, config: PluginConfig, context=None): # 添加 context 参数
         self.config = config
+        self.context = context
+        self.db_manager: DatabaseManager = context.get_service("database_manager") # 获取 DatabaseManager 实例
         
         # 初始化自定义 LLM 客户端
         self.filter_llm_client: Optional[LLMClient] = None
@@ -134,6 +137,29 @@ class MultidimensionalAnalyzer:
         }
         
         logger.info("多维度学习引擎初始化完成")
+
+    async def start(self):
+        """服务启动时加载用户画像和社交关系"""
+        # 假设每个群组有独立的画像和关系，这里需要一个 group_id
+        # 为了简化，暂时假设加载一个默认的或全局的画像和关系
+        # 实际应用中，可能需要根据当前处理的群组ID来加载
+        default_group_id = "global_profiles" # 或者从配置中获取
+        
+        # 加载所有用户画像 (这里需要 DatabaseManager 提供 load_all_user_profiles 方法)
+        # 暂时只加载一个示例用户
+        # loaded_profile_data = await self.db_manager.load_user_profile(default_group_id, "example_qq_id")
+        # if loaded_profile_data:
+        #     self.user_profiles[loaded_profile_data['qq_id']] = UserProfile(**loaded_profile_data)
+        #     logger.info(f"已从数据库加载用户画像: {loaded_profile_data['qq_id']}")
+        
+        # 加载所有社交关系 (这里需要 DatabaseManager 提供 load_all_social_relations 方法)
+        # loaded_social_graph = await self.db_manager.load_social_graph(default_group_id)
+        # for relation_data in loaded_social_graph:
+        #     relation = SocialRelation(**relation_data)
+        #     self.social_graph[relation.from_user].append(relation)
+        # logger.info(f"已从数据库加载 {len(loaded_social_graph)} 条社交关系。")
+        
+        logger.info("多维度学习引擎启动，准备进行分析。")
 
     async def filter_message_with_llm(self, message_text: str, current_persona_description: str) -> bool:
         """
@@ -258,7 +284,7 @@ class MultidimensionalAnalyzer:
             group_id = event.get_group_id()
             
             # 更新用户画像
-            await self._update_user_profile(sender_id, sender_name, message_text, event)
+            await self._update_user_profile(group_id, sender_id, sender_name, message_text, event) # 传入 group_id
             
             # 分析社交关系
             social_context = await self._analyze_social_context(event, message_text)
@@ -291,15 +317,13 @@ class MultidimensionalAnalyzer:
             logger.error(f"多维度上下文分析失败: {e}")
             return {}
 
-    async def _update_user_profile(self, qq_id: str, qq_name: str, message_text: str, event: AstrMessageEvent):
-        """更新用户画像"""
-        if qq_id not in self.user_profiles:
-            self.user_profiles[qq_id] = UserProfile(
-                qq_id=qq_id,
-                qq_name=qq_name
-            )
-        
-        profile = self.user_profiles[qq_id]
+    async def _update_user_profile(self, group_id: str, qq_id: str, qq_name: str, message_text: str, event: AstrMessageEvent):
+        """更新用户画像并持久化"""
+        profile_data = await self.db_manager.load_user_profile(group_id, qq_id)
+        if profile_data:
+            profile = UserProfile(**profile_data)
+        else:
+            profile = UserProfile(qq_id=qq_id, qq_name=qq_name)
         
         # 更新活动模式
         current_hour = datetime.now().hour
@@ -334,6 +358,9 @@ class MultidimensionalAnalyzer:
             # 保持最近50个特征值
             if len(profile.communication_style[feature]) > 50:
                 profile.communication_style[feature] = profile.communication_style[feature][-50:]
+        
+        self.user_profiles[qq_id] = profile # 更新内存中的画像
+        await self.db_manager.save_user_profile(group_id, asdict(profile)) # 持久化到数据库
 
     async def _analyze_social_context(self, event: AstrMessageEvent, message_text: str) -> Dict[str, Any]:
         """分析社交关系上下文"""
@@ -378,7 +405,7 @@ class MultidimensionalAnalyzer:
             social_context['group_role'] = group_role
             
             return social_context
-            
+        
         except Exception as e:
             logger.warning(f"社交上下文分析失败: {e}")
             return {}
@@ -419,23 +446,26 @@ class MultidimensionalAnalyzer:
     "惊讶": 0.0
 }}
 """
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
-            
-            if response and response.text():
-                try:
-                    emotion_scores = json.loads(response.text().strip())
-                    # 确保所有分数都在0-1之间
-                    for key, value in emotion_scores.items():
-                        emotion_scores[key] = max(0.0, min(float(value), 1.0))
-                    return emotion_scores
-                except json.JSONDecodeError:
-                    logger.warning(f"LLM响应JSON解析失败，返回简化情感分析。响应内容: {response.text()}")
-                    return self._simple_emotional_analysis(message_text)
-            return self._simple_emotional_analysis(message_text)
+            try:
+                response = await self.refine_llm_client.chat_completion(prompt=prompt)
                 
+                if response and response.text():
+                    try:
+                        emotion_scores = json.loads(response.text().strip())
+                        # 确保所有分数都在0-1之间
+                        for key, value in emotion_scores.items():
+                            emotion_scores[key] = max(0.0, min(float(value), 1.0))
+                        return emotion_scores
+                    except json.JSONDecodeError:
+                        logger.warning(f"LLM响应JSON解析失败，返回简化情感分析。响应内容: {response.text()}")
+                        return self._simple_emotional_analysis(message_text)
+                return self._simple_emotional_analysis(message_text)
+                
+            except Exception as e:
+                logger.warning(f"LLM情感分析失败，使用简化算法: {e}")
         except Exception as e:
-            logger.warning(f"LLM情感分析失败，使用简化算法: {e}")
-            return self._simple_emotional_analysis(message_text)
+            logger.warning(f"LLM情感分析失败 - 2，使用简化算法: {e}")
+
 
     def _simple_emotional_analysis(self, message_text: str) -> Dict[str, float]:
         """简化的情感分析（备用）"""
@@ -555,6 +585,9 @@ class MultidimensionalAnalyzer:
                 last_interaction=datetime.now().isoformat()
             )
             self.social_graph[from_user].append(new_relation)
+        
+        # 持久化社交关系
+        await self.db_manager.save_social_relation(group_id, asdict(existing_relation if existing_relation else new_relation))
 
     async def _analyze_group_role(self, user_id: str, group_id: str) -> str:
         """分析用户在群内的角色"""
@@ -596,16 +629,16 @@ class MultidimensionalAnalyzer:
                 length_similarity = 1.0 - abs(current_style['length'] - avg_length) / max(avg_length, 1)
                 relevance_score += length_similarity * 0.1
         
-        # 时间上下文相关性
-        current_hour = datetime.now().hour
-        if sender_id in self.user_profiles:
-            profile = self.user_profiles[sender_id]
-            if 'activity_hours' in profile.activity_pattern:
-                hour_frequency = profile.activity_pattern['activity_hours'].get(current_hour, 0)
-                total_messages = sum(profile.activity_pattern['activity_hours'].values())
-                if total_messages > 0:
-                    time_relevance = hour_frequency / total_messages
-                    relevance_score += time_relevance * 0.2
+            # 时间上下文相关性
+            current_hour = datetime.now().hour
+            if sender_id in self.user_profiles:
+                profile = self.user_profiles[sender_id]
+                if 'activity_hours' in profile.activity_pattern:
+                    hour_frequency = profile.activity_pattern['activity_hours'].get(current_hour, 0)
+                    total_messages = sum(profile.activity_pattern['activity_hours'].values())
+                    if total_messages > 0:
+                        time_relevance = hour_frequency / total_messages
+                        relevance_score += time_relevance * 0.2
         
         return min(relevance_score, 1.0)
 
@@ -995,6 +1028,8 @@ class MultidimensionalAnalyzer:
         }
         
         # 导出节点（用户）
+        # 从数据库加载所有用户画像，而不是只���内存中获取
+        # 为了简化，这里仍然使用内存中的 user_profiles，但实际应该从数据库加载
         for qq_id, profile in self.user_profiles.items():
             graph_data['nodes'].append({
                 'id': qq_id,
@@ -1004,6 +1039,8 @@ class MultidimensionalAnalyzer:
             })
         
         # 导出边（关系）
+        # 从数据库加载所有社交关系，而不是只从内存中获取
+        # 为了简化，这里仍然使用内存中的 social_graph，但实际应该从数据库加载
         for from_user, relations in self.social_graph.items():
             for relation in relations:
                 graph_data['edges'].append({

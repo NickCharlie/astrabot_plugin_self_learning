@@ -16,13 +16,13 @@ try:
     from sklearn.linear_model import LogisticRegression # 导入 LogisticRegression
     from sklearn.tree import DecisionTreeClassifier # 导入 DecisionTreeClassifier
     SKLEARN_AVAILABLE = True
-except ImportError:
+except ImportError: 
     SKLEARN_AVAILABLE = False
 
 from astrbot.api import logger
 
 from ..config import PluginConfig
-from ..exceptions import AnalysisError
+from ..exceptions import StyleAnalysisError
 from ..core.llm_client import LLMClient # 导入 LLMClient
 from .database_manager import DatabaseManager # 确保 DatabaseManager 被正确导入
 
@@ -230,23 +230,26 @@ class LightweightMLAnalyzer:
     async def _get_user_messages(self, group_id: str, user_id: str, limit: int) -> List[Dict[str, Any]]:
         """获取用户消息（限制数量）"""
         try:
-            conn = await self.db_manager.get_group_connection(group_id)
-            cursor = conn.cursor()
+            # 从全局消息数据库获取连接
+            conn = await self.db_manager._get_messages_db_connection()
+            cursor = await conn.cursor()
             
-            cursor.execute('''
-                SELECT message, timestamp, sender_name
+            await cursor.execute('''
+                SELECT message, timestamp, sender_name, sender_id, group_id
                 FROM raw_messages 
-                WHERE sender_id = ? AND timestamp > ?
+                WHERE sender_id = ? AND group_id = ? AND timestamp > ?
                 ORDER BY timestamp DESC 
                 LIMIT ?
-            ''', (user_id, time.time() - 86400 * 7, limit))  # 最近7天
+            ''', (user_id, group_id, time.time() - 86400 * 7, limit))  # 最近7天
             
             messages = []
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():
                 messages.append({
-                    'message': row,
+                    'message': row[0],
                     'timestamp': row[1],
-                    'sender_name': row
+                    'sender_name': row[2],
+                    'sender_id': row[3],
+                    'group_id': row[4]
                 })
             
             return messages
@@ -413,23 +416,25 @@ class LightweightMLAnalyzer:
     async def _get_recent_group_messages(self, group_id: str, limit: int) -> List[Dict[str, Any]]:
         """获取群聊最近消息"""
         try:
-            conn = await self.db_manager.get_group_connection(group_id)
-            cursor = conn.cursor()
+            # 从全局消息数据库获取连接
+            conn = await self.db_manager._get_messages_db_connection()
+            cursor = await conn.cursor()
             
-            cursor.execute('''
-                SELECT message, timestamp, sender_id
+            await cursor.execute('''
+                SELECT message, timestamp, sender_id, group_id
                 FROM raw_messages 
-                WHERE timestamp > ?
+                WHERE group_id = ? AND timestamp > ?
                 ORDER BY timestamp DESC 
                 LIMIT ?
-            ''', (time.time() - 3600 * 6, limit))  # 最近6小时
+            ''', (group_id, time.time() - 3600 * 6, limit))  # 最近6小时
             
             messages = []
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():
                 messages.append({
-                    'message': row,
+                    'message': row[0],
                     'timestamp': row[1],
-                    'sender_id': row
+                    'sender_id': row[2],
+                    'group_id': row[3]
                 })
             
             return messages
@@ -589,24 +594,25 @@ class LightweightMLAnalyzer:
     async def _get_most_active_users(self, group_id: str, limit: int) -> List[Dict[str, Any]]:
         """获取最活跃用户"""
         try:
-            conn = await self.db_manager.get_group_connection(group_id)
-            cursor = conn.cursor()
+            # 从全局消息数据库获取连接
+            conn = await self.db_manager._get_messages_db_connection()
+            cursor = await conn.cursor()
             
-            cursor.execute('''
+            await cursor.execute('''
                 SELECT sender_id, sender_name, COUNT(*) as message_count
                 FROM raw_messages 
-                WHERE timestamp > ?
-                GROUP BY sender_id
+                WHERE group_id = ? AND timestamp > ?
+                GROUP BY sender_id, sender_name
                 ORDER BY message_count DESC
                 LIMIT ?
-            ''', (time.time() - 86400, limit))  # 最近24小时
+            ''', (group_id, time.time() - 86400, limit))  # 最近24小时
             
             users = []
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():
                 users.append({
-                    'user_id': row,
+                    'user_id': row[0],
                     'user_name': row[1],
-                    'message_count': row
+                    'message_count': row[2]
                 })
             
             return users

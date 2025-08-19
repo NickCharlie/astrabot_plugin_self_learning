@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Any, Set
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from collections import defaultdict, Counter
+import emoji # 导入 emoji 库
 
 import asyncio # 确保 asyncio 导入
 import re
@@ -533,7 +534,7 @@ class MultidimensionalAnalyzer:
         return {
             'length': len(message_text),
             'punctuation_ratio': len([c for c in message_text if c in '，。！？；：']) / max(len(message_text), 1),
-            'emoji_count': len(re.findall(r'[😀-]', message_text)),
+            'emoji_count': emoji.emoji_count(message_text),
             'question_count': message_text.count('？') + message_text.count('?'),
             'exclamation_count': message_text.count('！') + message_text.count('!')
         }
@@ -664,14 +665,39 @@ class MultidimensionalAnalyzer:
         else:
             return '秋季'
 
-    async def _calculate_formal_level(self, text: str) -> float:
-        """使用LLM计算正式程度"""
+    async def _call_llm_for_style_analysis(self, text: str, prompt_template: str, fallback_function: callable, analysis_name: str) -> float:
+        """
+        通用的LLM风格分析辅助函数。
+        Args:
+            text: 待分析的文本。
+            prompt_template: LLM提示模板。
+            fallback_function: LLM客户端未初始化或调用失败时使用的备用函数。
+            analysis_name: 分析名称，用于日志记录。
+        Returns:
+            0-1之间的评分。
+        """
         if not self.refine_llm_client:
-            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM计算正式程度，使用简化算法。")
-            return self._simple_formal_level(text)
+            logger.warning(f"提炼模型LLM客户端未初始化，无法使用LLM计算{analysis_name}，使用简化算法。")
+            return fallback_function(text)
 
         try:
-            prompt = f"""
+            prompt = prompt_template.format(text=text)
+            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            
+            if response and response.text():
+                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
+                if numbers:
+                    return min(float(numbers[0]), 1.0)
+            
+            return 0.5 # 默认值
+            
+        except Exception as e:
+            logger.warning(f"LLM{analysis_name}计算失败，使用简化算法: {e}")
+            return fallback_function(text)
+
+    async def _calculate_formal_level(self, text: str) -> float:
+        """使用LLM计算正式程度"""
+        prompt_template = """
 请分析以下文本的正式程度，从0-1评分，0表示非常随意，1表示非常正式。
 
 分析维度：
@@ -685,19 +711,7 @@ class MultidimensionalAnalyzer:
 
 请只返回一个0-1之间的数值，不需要其他说明。
 """
-            
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
-            
-            if response and response.text():
-                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
-                if numbers:
-                    return min(float(numbers[0]), 1.0)
-            
-            return 0.5
-            
-        except Exception as e:
-            logger.warning(f"LLM正式程度计算失败，使用简化算法: {e}")
-            return self._simple_formal_level(text)
+        return await self._call_llm_for_style_analysis(text, prompt_template, self._simple_formal_level, "正式程度")
 
     def _simple_formal_level(self, text: str) -> float:
         """简化的正式程度计算（备用）"""
@@ -712,12 +726,7 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_enthusiasm_level(self, text: str) -> float:
         """使用LLM计算热情程度"""
-        if not self.refine_llm_client:
-            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM计算热情程度，使用简化算法。")
-            return self._simple_enthusiasm_level(text)
-
-        try:
-            prompt = f"""
+        prompt_template = """
 请分析以下文本的热情程度，从0-1评分，0表示非常冷淡，1表示非常热情。
 
 分析维度：
@@ -731,19 +740,7 @@ class MultidimensionalAnalyzer:
 
 请只返回一个0-1之间的数值，不需要其他说明。
 """
-            
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
-            
-            if response and response.text():
-                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
-                if numbers:
-                    return min(float(numbers[0]), 1.0)
-            
-            return 0.5
-            
-        except Exception as e:
-            logger.warning(f"LLM热情程度计算失败，使用简化算法: {e}")
-            return self._simple_enthusiasm_level(text)
+        return await self._call_llm_for_style_analysis(text, prompt_template, self._simple_enthusiasm_level, "热情程度")
 
     def _simple_enthusiasm_level(self, text: str) -> float:
         """简化的热情程度计算（备用）"""
@@ -753,12 +750,7 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_question_tendency(self, text: str) -> float:
         """使用LLM计算提问倾向"""
-        if not self.refine_llm_client:
-            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM计算提问倾向，使用简化算法。")
-            return self._simple_question_tendency(text)
-
-        try:
-            prompt = f"""
+        prompt_template = """
 请分析以下文本的提问倾向，从0-1评分，0表示完全没有疑问，1表示强烈的求知欲和疑问。
 
 分析维度：
@@ -772,19 +764,7 @@ class MultidimensionalAnalyzer:
 
 请只返回一个0-1之间的数值，不需要其他说明。
 """
-            
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
-            
-            if response and response.text():
-                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
-                if numbers:
-                    return min(float(numbers[0]), 1.0)
-            
-            return 0.5
-            
-        except Exception as e:
-            logger.warning(f"LLM提问倾向计算失败，使用简化算法: {e}")
-            return self._simple_question_tendency(text)
+        return await self._call_llm_for_style_analysis(text, prompt_template, self._simple_question_tendency, "提问倾向")
 
     def _simple_question_tendency(self, text: str) -> float:
         """简化的提问倾向计算（备用）"""
@@ -794,7 +774,7 @@ class MultidimensionalAnalyzer:
 
     def _calculate_emoji_usage(self, text: str) -> float:
         """计算表情符号使用程度"""
-        emoji_count = len(re.findall(r'[😀-]', text))
+        emoji_count = emoji.emoji_count(text)
         return min(emoji_count / max(len(text), 1) * 10, 1.0)
 
     def _calculate_punctuation_style(self, text: str) -> float:

@@ -230,7 +230,7 @@ class ProgressiveLearningStrategy(ILearningStrategy):
                 results.append(batch_result)
                 
                 # 小延迟避免过载
-                await asyncio.sleep(0.1)
+                # await asyncio.sleep(0.1) # 移除不必要的 sleep
             
             # 合并结果
             merged_result = self._merge_results(results)

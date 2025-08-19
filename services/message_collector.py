@@ -62,9 +62,9 @@ class MessageCollectorService:
             return
             
         try:
-            # 批量插入消息
-            for msg in self._message_cache:
-                await self.database_manager.collect_message(msg)
+            # 并发插入消息
+            tasks = [self.database_manager.collect_message(msg) for msg in self._message_cache]
+            await asyncio.gather(*tasks)
             
             logger.debug(f"已刷新 {len(self._message_cache)} 条消息到数据库")
             

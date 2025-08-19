@@ -91,10 +91,13 @@ class SelfLearningPlugin(star.Star):
             
         except SelfLearningError as sle:
             logger.error(f"自学习服务初始化失败: {sle}")
-            raise # 重新抛出，因为这是预期的初始化失败
-        except Exception as e:
+            raise # Re-raise as this is an expected initialization failure
+        except (TypeError, ValueError) as e: # Catch common initialization errors
+            logger.error(f"服务层初始化过程中发生配置或类型错误: {e}", exc_info=True)
+            raise SelfLearningError(f"插件初始化失败: {str(e)}") from e
+        except Exception as e: # Catch any other unexpected errors
             logger.error(f"服务层初始化过程中发生未知错误: {e}", exc_info=True)
-            raise SelfLearningError(f"插件初始化失败: {str(e)}") from e # 转换为特定异常并重新抛出
+            raise SelfLearningError(f"插件初始化失败: {str(e)}") from e
     
     def _setup_internal_components(self):
         """设置内部组件 - 使用工厂模式"""
@@ -119,8 +122,10 @@ class SelfLearningPlugin(star.Star):
         # 异步任务管理
         self.background_tasks = set()
         
-        # 启动异步任务
-        asyncio.create_task(self._delayed_start_learning())
+        # 启动异步任务并追踪
+        task = asyncio.create_task(self._delayed_start_learning())
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard) # 任务完成后从集合中移除
     
     async def _delayed_start_learning(self):
         """延迟启动学习服务"""
@@ -133,7 +138,7 @@ class SelfLearningPlugin(star.Star):
             logger.error(f"启动学习服务失败: {e}")
 
     @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(plugin_instance, event: AstrMessageEvent):
+    async def on_message(plugin_instance, event: AstrMessageEvent): # Removed context=None
         """监听所有消息，收集用户对话数据"""
         
         # 检查是否启用消息抓取
@@ -167,7 +172,7 @@ class SelfLearningPlugin(star.Star):
             if plugin_instance.plugin_config.enable_realtime_learning:
                 await plugin_instance._process_message_realtime(message_text, sender_id)
                 
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"消息收集过程中发生未知错误: {e}", exc_info=True)
 
     async def _process_message_realtime(plugin_instance, message_text: str, sender_id: str):
@@ -183,7 +188,7 @@ class SelfLearningPlugin(star.Star):
                 })
                 plugin_instance.learning_stats.filtered_messages += 1
                 
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"实时消息处理过程中发生未知错误: {e}", exc_info=True)
 
     async def _perform_learning_cycle(plugin_instance):
@@ -259,7 +264,7 @@ class SelfLearningPlugin(star.Star):
             
             logger.info("自学习周期完成")
             
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"学习周期执行过程中发生未知错误: {e}", exc_info=True)
 
     @filter.command("learning_status")
@@ -304,7 +309,7 @@ class SelfLearningPlugin(star.Star):
 
             yield event.plain_result(status_info.strip())
             
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"获取学习状态失败: {e}", exc_info=True)
             yield event.plain_result(f"状态查询失败: {str(e)}")
 
@@ -319,7 +324,7 @@ class SelfLearningPlugin(star.Star):
             plugin_instance.learning_scheduler.start()
             yield event.plain_result("✅ 自动学习已启动")
             
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"启动学习失败: {e}", exc_info=True)
             yield event.plain_result(f"启动失败: {str(e)}")
 
@@ -334,7 +339,7 @@ class SelfLearningPlugin(star.Star):
             await plugin_instance.learning_scheduler.stop()
             yield event.plain_result("⏹️ 自动学习已停止")
             
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"停止学习失败: {e}", exc_info=True)
             yield event.plain_result(f"停止失败: {str(e)}")
 
@@ -346,7 +351,7 @@ class SelfLearningPlugin(star.Star):
             await plugin_instance._perform_learning_cycle()
             yield event.plain_result("✅ 强制学习周期完成")
             
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"强制学习失败: {e}", exc_info=True)
             yield event.plain_result(f"强制学习失败: {str(e)}")
 
@@ -361,7 +366,7 @@ class SelfLearningPlugin(star.Star):
             
             yield event.plain_result("🗑️ 所有学习数据已清空")
             
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"清空数据失败: {e}", exc_info=True)
             yield event.plain_result(f"清空数据失败: {str(e)}")
 
@@ -381,7 +386,7 @@ class SelfLearningPlugin(star.Star):
                 
             yield event.plain_result(f"📤 学习数据已导出到: {filepath}")
             
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"导出数据失败: {e}", exc_info=True)
             yield event.plain_result(f"导出数据失败: {str(e)}")
 
@@ -392,11 +397,21 @@ class SelfLearningPlugin(star.Star):
             if hasattr(plugin_instance, 'learning_scheduler'):
                 await plugin_instance.learning_scheduler.stop()
                 
+            # 取消所有后台任务
+            for task in list(plugin_instance.background_tasks): # 使用 list() 避免在迭代时修改集合
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass # 任务已被取消，这是预期行为
+                except Exception as e:
+                    logger.error(f"取消后台任务时发生错误: {e}", exc_info=True)
+            
             # 保存最终状态
             if hasattr(plugin_instance, 'message_collector'):
                 await plugin_instance.message_collector.save_state()
                 
             logger.info("自学习插件已安全卸载")
             
-        except Exception as e:
+        except Exception as e: # Consider more specific exceptions if possible
             logger.error(f"插件卸载清理失败: {e}", exc_info=True)

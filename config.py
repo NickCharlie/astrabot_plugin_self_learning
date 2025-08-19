@@ -64,6 +64,8 @@ class PluginConfig:
     reply_probability: float = 0.1          # 回复概率
     context_window_size: int = 5            # 上下文窗口大小
     intelligent_reply_keywords: List[str] = None # 智能回复关键词
+    intelligent_responder_system_prompt: Optional[str] = None # 智能回复系统提示
+    intelligent_responder_temperature: float = 0.7 # 智能回复温度
     
     # 人格备份设置
     auto_backup_enabled: bool = True        # 启用自动备份
@@ -148,6 +150,8 @@ class PluginConfig:
             reply_probability=plugin_settings.get('reply_probability', 0.1),
             context_window_size=plugin_settings.get('context_window_size', 5),
             intelligent_reply_keywords=plugin_settings.get('intelligent_reply_keywords', []),
+            intelligent_responder_system_prompt=plugin_settings.get('intelligent_responder_system_prompt', None),
+            intelligent_responder_temperature=plugin_settings.get('intelligent_responder_temperature', 0.7),
             auto_backup_enabled=plugin_settings.get('auto_backup_enabled', True),
             backup_interval_hours=plugin_settings.get('backup_interval_hours', 24),
             max_backups_per_group=plugin_settings.get('max_backups_per_group', 10),

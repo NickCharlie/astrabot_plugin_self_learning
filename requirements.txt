@@ -97,3 +97,4 @@ click
 tqdm
 rich
 typer
+emoji

@@ -528,14 +528,18 @@ class LightweightMLAnalyzer:
             # 简单线性趋势计算
             x = np.array(range(len(counts)))
             y = np.array(counts)
-            trend_slope = np.polyfit(x, y, 1)
+            trend_slope = np.polyfit(x, y, 1)[0] # 取第一个元素
         else:
-            trend_slope = 0
+            trend_slope = 0.0 # 确保为浮点数
+        
+        peak_hour = None
+        if hourly_counts:
+            peak_hour = max(hourly_counts.items(), key=lambda x: x[1])[0] # 获取小时而不是计数
         
         return {
             'hourly_activity': dict(hourly_counts),
             'trend_slope': float(trend_slope),
-            'peak_hour': max(hourly_counts.items(), key=lambda x: x) if hourly_counts else None[1],
+            'peak_hour': peak_hour,
             'total_activity': sum(counts)
         }
 

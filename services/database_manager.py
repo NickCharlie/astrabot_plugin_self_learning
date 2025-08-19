@@ -7,13 +7,11 @@ import aiosqlite
 import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from dataclasses import asdict
 
 from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..exceptions import DataStorageError
-from ..core.interfaces import IAsyncService
 from ..core.patterns import AsyncServiceBase
 
 

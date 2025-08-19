@@ -264,12 +264,12 @@ class ServiceFactory(IServiceFactory):
             
             service = ProgressiveLearningService(
                 self.config, 
-                self.context, 
-                self.create_message_collector(),
-                self.create_multidimensional_analyzer(),
-                self.create_style_analyzer(),
-                self.create_quality_monitor(),
-                db_manager  # Pass the database manager here
+                self.context,
+                db_manager=db_manager, # 传递 db_manager 实例
+                message_collector=self.create_message_collector(),
+                multidimensional_analyzer=self.create_multidimensional_analyzer(),
+                style_analyzer=self.create_style_analyzer(),
+                quality_monitor=self.create_quality_monitor()
             )
             self._service_cache[cache_key] = service
             self._registry.register_service("progressive_learning", service)
@@ -384,7 +384,7 @@ class ServiceFactory(IServiceFactory):
         return self._registry.get_service_status()
     
     def clear_cache(self):
-        """清理服务缓存"""
+        """清理服务���存"""
         self._service_cache.clear()
         self._logger.info("服务缓存已清理")
 

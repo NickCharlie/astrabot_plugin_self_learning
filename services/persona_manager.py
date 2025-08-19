@@ -2,7 +2,6 @@ import logging
 from typing import Dict, Any, Optional, List
 
 from astrbot.api.star import Context
-from astrbot.core.provider.provider import Personality # 导入 Personality
 from ..config import PluginConfig
 from ..core.interfaces import IPersonaManager, IPersonaUpdater, IPersonaBackupManager, ServiceLifecycle, MessageData
 from ..exceptions import SelfLearningError # 导入 SelfLearningError

@@ -1,11 +1,8 @@
 """
 人格更新服务 - 基于AstrBot框架的人格管理
 """
-import asyncio
 import logging
 from typing import Dict, List, Any, Optional
-from datetime import datetime
-import copy
 
 from astrbot.api.star import Context
 from astrbot.core.provider.provider import Personality

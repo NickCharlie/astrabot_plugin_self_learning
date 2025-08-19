@@ -36,14 +36,15 @@ class LearningSession:
 class ProgressiveLearningService:
     """渐进式学习服务"""
     
-    def __init__(self, config: PluginConfig, context: Context, 
+    def __init__(self, config: PluginConfig, context: Context,
+                 db_manager: DatabaseManager, # 添加 db_manager 参数
                  message_collector: MessageCollectorService,
                  multidimensional_analyzer: MultidimensionalAnalyzer,
                  style_analyzer: StyleAnalyzerService,
                  quality_monitor: LearningQualityMonitor):
         self.config = config
         self.context = context
-        self.db_manager: DatabaseManager = context.get_service("database_manager") # 获取 DatabaseManager 实例
+        self.db_manager = db_manager # 直接使用传入的 db_manager 实例
         
         # 注入各个组件服务
         self.message_collector = message_collector
@@ -57,9 +58,9 @@ class ProgressiveLearningService:
         self.learning_sessions: List[LearningSession] = [] # 历史学习会话，可以从数据库加载
         
         # 学习控制参数
-        self.batch_size = config.learning_batch_size
-        self.learning_interval = config.learning_interval_minutes * 60  # 转换为秒
-        self.quality_threshold = config.quality_threshold
+        self.batch_size = config.max_messages_per_batch
+        self.learning_interval = config.learning_interval_hours * 3600  # 转换为秒
+        self.quality_threshold = config.style_update_threshold
         
         logger.info("渐进式学习服务初始化完成")
 

@@ -3,6 +3,7 @@
 """
 import json
 import time
+import re # 移动到文件顶部
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -132,13 +133,17 @@ class LearningQualityMonitor:
                 """
             
             # 调用模型分析
-            response = await self._llm_client.chat_completion(prompt=prompt)
+            response = await self._llm_client.chat_completion(
+                prompt=prompt,
+                api_url=self.config.refine_api_url,
+                api_key=self.config.refine_api_key,
+                model_name=self.config.refine_model_name
+            )
             
             # 尝试提取数值
-            import re
             numbers = re.findall(r'0\.\d+|1\.0|0', response)
             if numbers:
-                return min(float(numbers), 1.0)
+                return min(float(numbers[0]), 1.0) # 修改为 float(numbers[0])
             
             return 0.5
             
@@ -221,7 +226,12 @@ class LearningQualityMonitor:
                 }}
                 """
         try:
-            response = await self._llm_client.chat_completion(prompt=prompt)
+            response = await self._llm_client.chat_completion(
+                prompt=prompt,
+                api_url=self.config.refine_api_url,
+                api_key=self.config.refine_api_key,
+                model_name=self.config.refine_model_name
+            )
             if response and response.text():
                 try:
                     emotional_scores = json.loads(response.text().strip())

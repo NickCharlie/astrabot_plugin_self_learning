@@ -5,6 +5,7 @@ import numpy as np
 import json
 import time
 import pandas as pd # 导入 pandas
+import asyncio # 导入 asyncio
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
@@ -135,7 +136,7 @@ class LightweightMLAnalyzer:
             logger.error(f"执行记忆重放失败: {e}")
             return {}
 
-    def train_strategy_model(self, X: np.ndarray, y: np.ndarray, model_type: str = "logistic_regression"):
+    async def train_strategy_model(self, X: np.ndarray, y: np.ndarray, model_type: str = "logistic_regression"):
         """
         训练策略模型（逻辑回归或决策树）。
         X: 特征矩阵 (e.g., 消息长度, 情感分数, 相关性分数)
@@ -155,7 +156,8 @@ class LightweightMLAnalyzer:
             return
 
         try:
-            self.strategy_model.fit(X, y)
+            # 将阻塞的fit操作放到单独的线程中执行
+            await asyncio.to_thread(self.strategy_model.fit, X, y)
             logger.info(f"策略模型 ({model_type}) 训练完成。")
         except Exception as e:
             logger.error(f"训练策略模型失败: {e}")

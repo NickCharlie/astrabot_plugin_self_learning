@@ -3,7 +3,7 @@
 """
 import os
 from typing import List, Optional
-from dataclasses import dataclass, asdict # 导入 asdict
+from dataclasses import dataclass, field, asdict # 导入 asdict
 # from astrbot.core.utils.astrbot_path import get_astrbot_data_path # 不再直接使用
 
 
@@ -18,7 +18,7 @@ class PluginConfig:
     enable_web_interface: bool = False
     
     # QQ号设置
-    target_qq_list: List[str] = None
+    target_qq_list: List[str] = field(default_factory=list)
     
     # 模型配置
     filter_model_name: str = "gpt-4o-mini"  # 筛选模型（弱模型）
@@ -63,7 +63,7 @@ class PluginConfig:
     enable_intelligent_reply: bool = False   # 启用智能回复
     reply_probability: float = 0.1          # 回复概率
     context_window_size: int = 5            # 上下文窗口大小
-    intelligent_reply_keywords: List[str] = None # 智能回复关键词
+    intelligent_reply_keywords: List[str] = field(default_factory=lambda: ['bot', 'ai', '人工智能', '机器人', '助手']) # 智能回复关键词
     intelligent_responder_system_prompt: Optional[str] = None # 智能回复系统提示
     intelligent_responder_temperature: float = 0.7 # 智能回复温度
     
@@ -91,13 +91,7 @@ class PluginConfig:
     def __post_init__(self):
         """初始化后处理"""
         # 这些路径的默认值和目录创建应在外部（如主插件类）处理
-        # 初始化target_qq_list为空列表
-        if self.target_qq_list is None:
-            self.target_qq_list = []
-        
-        # 初始化intelligent_reply_keywords为空列表
-        if self.intelligent_reply_keywords is None:
-            self.intelligent_reply_keywords = ['bot', 'ai', '人工智能', '机器人', '助手']
+        pass
 
     @classmethod
     def create_from_config(cls, config: dict, data_dir: Optional[str] = None) -> 'PluginConfig':

@@ -208,18 +208,34 @@ class SelfLearningPlugin(star.Star):
             processed_messages = []
             current_persona_description = plugin_instance.persona_manager.get_current_persona_description() # 获取当前人格描述
             
+            # 2. 使用弱模型筛选消息并进行多维度评分 (并发处理)
+            filter_tasks = []
             for msg in raw_messages:
                 message_text = msg['message']
-                
-                # 首先进行基础筛选
-                if await plugin_instance.multidimensional_analyzer.filter_message_with_llm(message_text, current_persona_description):
-                    # 如果通过筛选，则进行多维度评分
-                    quality_scores = await plugin_instance.multidimensional_analyzer.evaluate_message_quality_with_llm(
+                filter_tasks.append(
+                    plugin_instance.multidimensional_analyzer.filter_message_with_llm(
                         message_text, current_persona_description
                     )
-                    
-                    # 将评分添加到消息数据中
-                    msg['quality_scores'] = quality_scores
+                )
+            
+            filter_results = await asyncio.gather(*filter_tasks)
+            
+            evaluation_tasks = []
+            filtered_raw_messages = []
+            for i, msg in enumerate(raw_messages):
+                if filter_results[i]:
+                    filtered_raw_messages.append(msg)
+                    evaluation_tasks.append(
+                        plugin_instance.multidimensional_analyzer.evaluate_message_quality_with_llm(
+                            msg['message'], current_persona_description
+                        )
+                    )
+            
+            if evaluation_tasks:
+                evaluation_results = await asyncio.gather(*evaluation_tasks)
+                
+                for i, msg in enumerate(filtered_raw_messages):
+                    msg['quality_scores'] = evaluation_results[i]
                     processed_messages.append(msg)
                     
             logger.info(f"筛选并评分出 {len(processed_messages)} 条适合学习的消息")

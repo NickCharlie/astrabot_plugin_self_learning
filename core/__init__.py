@@ -46,7 +46,8 @@ __all__ = [
     'AnalysisType',
     'EventType',
     'ServiceError',
-    'AnalysisError',
+    # 'AnalysisError',
     'ConfigurationError',
-    'DataStorageError'
+    'DataStorageError',
+    'PersonaUpdateError'
 ]

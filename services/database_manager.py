@@ -387,6 +387,35 @@ class DatabaseManager(AsyncServiceBase):
             logger.error(f"保存社交关系失败: {e}", exc_info=True)
             raise DataStorageError(f"保存社交关系失败: {str(e)}")
 
+    async def save_raw_message(self, message_data: Dict[str, Any]) -> int:
+        """
+        将原始消息保存到全局消息数据库。
+        """
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                INSERT INTO raw_messages (sender_id, sender_name, message, group_id, platform, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                message_data.get('sender_id'),
+                message_data.get('sender_name'),
+                message_data.get('message'),
+                message_data.get('group_id'),
+                message_data.get('platform'),
+                message_data.get('timestamp')
+            ))
+            
+            message_id = cursor.lastrowid
+            await conn.commit()
+            logger.debug(f"原始消息已保存，ID: {message_id}")
+            return message_id
+            
+        except aiosqlite.Error as e:
+            logger.error(f"保存原始消息失败: {e}", exc_info=True)
+            raise DataStorageError(f"保存原始消息失败: {str(e)}")
+
     async def load_social_graph(self, group_id: str) -> List[Dict[str, Any]]:
         """加载完整社交图谱"""
         conn = await self.get_group_connection(group_id)

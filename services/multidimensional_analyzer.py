@@ -4,20 +4,12 @@
 import re
 import json
 import time
+import asyncio # 确保 asyncio 导入
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from collections import defaultdict, Counter
 import emoji # 导入 emoji 库
-
-import asyncio # 确保 asyncio 导入
-import re
-import json
-import time
-from typing import Dict, List, Optional, Any, Set
-from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
-from collections import defaultdict, Counter
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
@@ -85,34 +77,16 @@ class MultidimensionalAnalyzer:
         self.db_manager: DatabaseManager = db_manager # 直接传入 DatabaseManager 实例
         
         # 初始化自定义 LLM 客户端
-        self.filter_llm_client: Optional[LLMClient] = None
-        if config.filter_api_url and config.filter_api_key and config.filter_model_name:
-            self.filter_llm_client = LLMClient(
-                api_url=config.filter_api_url,
-                api_key=config.filter_api_key,
-                model_name=config.filter_model_name
-            )
-        else:
+        self.filter_llm_client: Optional[LLMClient] = LLMClient() # 修改实例化方式
+        if not (config.filter_api_url and config.filter_api_key and config.filter_model_name):
             logger.warning("筛选模型LLM配置不完整，将无法使用LLM进行消息筛选。")
 
-        self.refine_llm_client: Optional[LLMClient] = None
-        if config.refine_api_url and config.refine_api_key and config.refine_model_name:
-            self.refine_llm_client = LLMClient(
-                api_url=config.refine_api_url,
-                api_key=config.refine_api_key,
-                model_name=config.refine_model_name
-            )
-        else:
+        self.refine_llm_client: Optional[LLMClient] = LLMClient() # 修改实例化方式
+        if not (config.refine_api_url and config.refine_api_key and config.refine_model_name):
             logger.warning("提炼模型LLM配置不完整，将无法使用LLM进行深度分析。")
 
-        self.reinforce_llm_client: Optional[LLMClient] = None
-        if config.reinforce_api_url and config.reinforce_api_key and config.reinforce_model_name:
-            self.reinforce_llm_client = LLMClient(
-                api_url=config.reinforce_api_url,
-                api_key=config.reinforce_api_key,
-                model_name=config.reinforce_model_name
-            )
-        else:
+        self.reinforce_llm_client: Optional[LLMClient] = LLMClient() # 修改实例化方式
+        if not (config.reinforce_api_url and config.reinforce_api_key and config.reinforce_model_name):
             logger.warning("强化模型LLM配置不完整，将无法使用LLM进行强化学习。")
         
         # 用户画像存储
@@ -167,10 +141,8 @@ class MultidimensionalAnalyzer:
         使用 LLM 对消息进行智能筛选，判断其是否与当前人格匹配、特征鲜明且有学习意义。
         返回 True 表示消息通过筛选，False 表示不通过。
         """
-        if not self.filter_llm_client:
-            logger.warning("筛选模型LLM客户端未初始化，跳过LLM消息筛选。")
-            # 如果LLM客户端未初始化，可以根据其他简单规则进行筛选，或者直接返回True/False
-            # 这里暂时返回True，表示不进行LLM筛选
+        if not (self.config.filter_api_url and self.config.filter_api_key and self.config.filter_model_name):
+            logger.warning("筛选模型LLM配置不完整，跳过LLM消息筛选。")
             return True
 
         prompt = f"""
@@ -190,7 +162,12 @@ class MultidimensionalAnalyzer:
 请只返回一个0-1之间的数值，不需要其他说明。
 """
         try:
-            response = await self.filter_llm_client.chat_completion(prompt=prompt)
+            response = await self.filter_llm_client.chat_completion(
+                prompt=prompt,
+                api_url=self.config.filter_api_url,
+                api_key=self.config.filter_api_key,
+                model_name=self.config.filter_model_name
+            )
             if response and response.text():
                 numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
                 if numbers:
@@ -209,7 +186,7 @@ class MultidimensionalAnalyzer:
         评分维度包括：内容质量、相关性、情感积极性、互动性、学习价值。
         返回一个包含各维度评分的字典。
         """
-        if not self.refine_llm_client: # 使用 refine_llm_client 进行更复杂的分析
+        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
             logger.warning("提炼模型LLM客户端未初始化，无法使用LLM进行多维度量化评分。")
             return {
                 "content_quality": 0.5,
@@ -241,7 +218,12 @@ class MultidimensionalAnalyzer:
 请确保返回有效的JSON格式，并且只包含JSON对象，不需要其他说明。
 """
         try:
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            response = await self.refine_llm_client.chat_completion(
+                prompt=prompt,
+                api_url=self.config.refine_api_url,
+                api_key=self.config.refine_api_key,
+                model_name=self.config.refine_model_name
+            )
             if response and response.text():
                 try:
                     scores = json.loads(response.text().strip())
@@ -428,7 +410,7 @@ class MultidimensionalAnalyzer:
 
     async def _analyze_emotional_context(self, message_text: str) -> Dict[str, float]:
         """使用LLM分析情感上下文"""
-        if not self.refine_llm_client:
+        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
             logger.warning("提炼模型LLM客户端未初始化，无法使用LLM分析情感上下文，使用简化算法。")
             return self._simple_emotional_analysis(message_text)
 
@@ -448,7 +430,12 @@ class MultidimensionalAnalyzer:
 }}
 """
             try:
-                response = await self.refine_llm_client.chat_completion(prompt=prompt)
+                response = await self.refine_llm_client.chat_completion(
+                    prompt=prompt,
+                    api_url=self.config.refine_api_url,
+                    api_key=self.config.refine_api_key,
+                    model_name=self.config.refine_model_name
+                )
                 
                 if response and response.text():
                     try:
@@ -479,12 +466,15 @@ class MultidimensionalAnalyzer:
         }
         
         emotion_scores = {}
-        total_words = len(message_text)
+        # 将消息文本按空格或标点符号分割成单词，并过滤掉空字符串
+        words = [word for word in re.split(r'\s+|[，。！？；：]', message_text) if word]
+        total_words = len(words) # 已经修改为单词总数
         
         for emotion, keywords in emotions.items():
             count = 0
             for keyword in keywords:
-                count += message_text.count(keyword)
+                # 检查关键词是否在单词列表中
+                count += words.count(keyword)
             
             emotion_scores[emotion] = count / max(total_words, 1)
         
@@ -676,13 +666,18 @@ class MultidimensionalAnalyzer:
         Returns:
             0-1之间的评分。
         """
-        if not self.refine_llm_client:
+        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
             logger.warning(f"提炼模型LLM客户端未初始化，无法使用LLM计算{analysis_name}，使用简化算法。")
             return fallback_function(text)
 
         try:
             prompt = prompt_template.format(text=text)
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            response = await self.refine_llm_client.chat_completion(
+                prompt=prompt,
+                api_url=self.config.refine_api_url,
+                api_key=self.config.refine_api_key,
+                model_name=self.config.refine_model_name
+            )
             
             if response and response.text():
                 numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
@@ -789,7 +784,7 @@ class MultidimensionalAnalyzer:
         
         profile = self.user_profiles[qq_id]
         
-        # 计算���跃时段
+        # 计算活跃时段
         active_hours = []
         if 'activity_hours' in profile.activity_pattern:
             sorted_hours = sorted(profile.activity_pattern['activity_hours'].items(), 
@@ -822,7 +817,7 @@ class MultidimensionalAnalyzer:
 
     async def _generate_deep_insights(self, profile: UserProfile) -> Dict[str, Any]:
         """使用LLM生成深度用户洞察"""
-        if not self.refine_llm_client:
+        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
             logger.warning("提炼模型LLM客户端未初始化，无法使用LLM生成深度用户洞察。")
             return {"error": "LLM服务不可用"}
 
@@ -864,7 +859,12 @@ class MultidimensionalAnalyzer:
 请确保返回有效的JSON格式。
 """
             
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            response = await self.refine_llm_client.chat_completion(
+                prompt=prompt,
+                api_url=self.config.refine_api_url,
+                api_key=self.config.refine_api_key,
+                model_name=self.config.refine_model_name
+            )
             
             if response and response.text():
                 try:
@@ -886,7 +886,7 @@ class MultidimensionalAnalyzer:
 
     async def _analyze_personality_traits(self, profile: UserProfile) -> Dict[str, float]:
         """分析用户人格特质"""
-        if not self.refine_llm_client:
+        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
             logger.warning("提炼模型LLM客户端未初始化，无法使用LLM分析人格特质，使用简化算法。")
             return self._simple_personality_analysis(profile)
 
@@ -913,7 +913,12 @@ class MultidimensionalAnalyzer:
 }}
 """
             
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
+            response = await self.refine_llm_client.chat_completion(
+                prompt=prompt,
+                api_url=self.config.refine_api_url,
+                api_key=self.config.refine_api_key,
+                model_name=self.config.refine_model_name
+            )
             
             if response and response.text():
                 try:

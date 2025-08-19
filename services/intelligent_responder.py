@@ -3,6 +3,7 @@
 """
 import json
 import time
+import random # 移动到文件顶部
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
@@ -52,7 +53,6 @@ class IntelligentResponder:
             message_text = event.get_message_str()
             
             # 检查回复概率
-            import random
             if random.random() > self.reply_probability:
                 return False
             
@@ -121,7 +121,6 @@ class IntelligentResponder:
             # 调用框架的默认LLM
             provider = self.context.get_using_provider()
             if not provider:
-                logger.warning("未找到可用的LLM提供商")
                 logger.warning("未找到可用的LLM提供商")
                 return None
             
@@ -303,7 +302,8 @@ class IntelligentResponder:
     async def _analyze_group_atmosphere(self, group_id: str) -> Dict[str, Any]:
         """分析群氛围"""
         try:
-            conn = await self.db_manager.get_group_connection(group_id)
+            # 从全局消息数据库获取连接
+            conn = await self.db_manager._get_messages_db_connection()
             cursor = await conn.cursor()
             
             # 分析最近消息的情感倾向
@@ -316,37 +316,6 @@ class IntelligentResponder:
             
             row = await cursor.fetchone()
             
-            total_messages = row[0] if row else 0
-            avg_length = row[1] if row else 0.0
-            
-            return {
-                'activity_level': 'high' if total_messages > self.GROUP_ACTIVITY_HIGH_THRESHOLD else 'low',
-                'avg_message_length': avg_length,
-                'total_recent_messages': total_messages
-            }
-            
-        except Exception as e:
-            logger.error(f"分析群氛围失败: {e}")
-            return {'activity_level': 'unknown'}
-
-    async def _analyze_group_atmosphere(self, group_id: str) -> Dict[str, Any]:
-        """分析群聊氛围"""
-        try:
-            conn = await self.db_manager.get_group_connection(group_id)
-            cursor = await conn.cursor()
-            
-            # 分析最近消息的情感倾向
-            await cursor.execute('''
-                SELECT COUNT(*) as total_messages,
-                       AVG(LENGTH(message)) as avg_length
-                FROM raw_messages 
-                WHERE timestamp > ?
-            ''', (time.time() - self.GROUP_ATMOSPHERE_PERIOD_SECONDS,))  # 最近1小时
-            
-            row = await cursor.fetchone()
-            
-            # 修正：这里重复获取了一次fetchone，导致数据可能不正确。应该只获取一次。
-            # row = await cursor.fetchone() 
             total_messages = row[0] if row else 0
             avg_length = row[1] if row else 0.0
             

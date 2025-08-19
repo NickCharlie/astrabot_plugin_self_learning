@@ -63,7 +63,7 @@ class MessageCollectorService:
             
         try:
             # 并发插入消息
-            tasks = [self.database_manager.collect_message(msg) for msg in self._message_cache]
+            tasks = [self.database_manager.save_raw_message(msg) for msg in self._message_cache]
             await asyncio.gather(*tasks)
             
             logger.debug(f"已刷新 {len(self._message_cache)} 条消息到数据库")

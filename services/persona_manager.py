@@ -48,10 +48,9 @@ class PersonaManagerService(IPersonaManager):
         """
         try:
             self._logger.info("PersonaManagerService: Updating persona...")
-            
             # 在更新前创建备份
             backup_id = await self._persona_backup_manager.create_backup_before_update(
-                "default", # 假设 group_id 为 "default"
+                "default",  # 假设 group_id 为 "default"
                 f"Style update initiated by PersonaManagerService"
             )
             self._logger.info(f"PersonaManagerService: Created persona backup: {backup_id}")

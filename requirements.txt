@@ -33,7 +33,7 @@ sentence-transformers
 
 # HTTP请求和API
 requests
-httpx
+aiohttp
 
 # 配置文件处理
 pyyaml

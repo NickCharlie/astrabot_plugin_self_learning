@@ -1,7 +1,7 @@
 import asyncio
-import httpx
 import json
 from typing import Optional, List, Dict, Any
+import aiohttp
 
 from astrbot.api import logger
 
@@ -26,7 +26,7 @@ class LLMClient:
     """
 
     def __init__(self):
-        self.client = httpx.AsyncClient(timeout=60.0) # 设置超时时间
+        self.client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60.0)) # 设置超时时间
 
     async def chat_completion(
         self,
@@ -60,26 +60,23 @@ class LLMClient:
 
         try:
             logger.debug(f"Calling LLM API: {api_url} with model {model_name}")
-            response = await self.client.post(api_url, headers=headers, json=payload)
-            response.raise_for_status() # 检查HTTP错误
+            async with self.client.post(api_url, headers=headers, json=payload) as response:
+                response.raise_for_status() # 检查HTTP错误
 
-            response_data = response.json()
-            
-            # 假设LLM响应格式与OpenAI兼容
-            if "choices" in response_data and len(response_data["choices"]) > 0:
-                text_content = response_data["choices"][0]["message"]["content"]
-                return LLMResponse(text=text_content, raw_response=response_data)
-            else:
-                logger.error(f"LLM API 响应格式不正确或无内容: {response_data}")
-                return None
-        except httpx.RequestError as e:
-            logger.error(f"调用 LLM API ({api_url}) 请求失败: {e}", exc_info=True)
-            return None
-        except httpx.HTTPStatusError as e:
-            logger.error(f"调用 LLM API ({api_url}) HTTP 错误: {e.response.status_code} - {e.response.text}", exc_info=True)
+                response_data = await response.json()
+                
+                # 假设LLM响应格式与OpenAI兼容
+                if "choices" in response_data and len(response_data["choices"]) > 0:
+                    text_content = response_data["choices"][0]["message"]["content"]
+                    return LLMResponse(text=text_content, raw_response=response_data)
+                else:
+                    logger.error(f"LLM API 响应格式不正确或无内容: {response_data}")
+                    return None
+        except aiohttp.ClientError as e:
+            logger.error(f"调用 LLM API ({api_url}) 请求失败或HTTP错误: {e}", exc_info=True)
             return None
         except json.JSONDecodeError as e:
-            logger.error(f"LLM API 响应解析失败: {e} - 响应内容: {response.text}", exc_info=True)
+            logger.error(f"LLM API 响应解析失败: {e} - 响应内容: {response.text if 'response' in locals() else 'N/A'}", exc_info=True)
             return None
         except Exception as e:
             logger.error(f"调用 LLM API ({api_url}) 发生未知错误: {e}", exc_info=True)

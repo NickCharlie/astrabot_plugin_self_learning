@@ -18,6 +18,7 @@ from .message_collector import MessageCollectorService
 from .multidimensional_analyzer import MultidimensionalAnalyzer
 from .style_analyzer import StyleAnalyzerService
 from .learning_quality_monitor import LearningQualityMonitor
+from .persona_manager import PersonaManagerService # 导入 PersonaManagerService
 
 
 @dataclass
@@ -37,20 +38,23 @@ class ProgressiveLearningService:
     """渐进式学习服务"""
     
     def __init__(self, config: PluginConfig, context: Context,
-                 db_manager: DatabaseManager, # 添加 db_manager 参数
+                 db_manager: DatabaseManager,
                  message_collector: MessageCollectorService,
                  multidimensional_analyzer: MultidimensionalAnalyzer,
                  style_analyzer: StyleAnalyzerService,
-                 quality_monitor: LearningQualityMonitor):
+                 quality_monitor: LearningQualityMonitor,
+                 persona_manager: PersonaManagerService, # 添加 persona_manager 参数
+                 prompts: Any): # 添加 prompts 参数
         self.config = config
         self.context = context
-        self.db_manager = db_manager # 直接使用传入的 db_manager 实例
+        self.db_manager = db_manager
         
         # 注入各个组件服务
         self.message_collector = message_collector
         self.multidimensional_analyzer = multidimensional_analyzer
         self.style_analyzer = style_analyzer
         self.quality_monitor = quality_monitor
+        self.persona_manager = persona_manager # 注入 persona_manager
         
         # 学习状态
         self.learning_active = False
@@ -165,24 +169,24 @@ class ProgressiveLearningService:
                 return
             
             # 3. 使用风格分析器深度分析
-            style_analysis = await self.style_analyzer.analyze_conversation_style(group_id, filtered_messages) # 传入 group_id
+            style_analysis = await self.style_analyzer.analyze_conversation_style(group_id, filtered_messages)
             
-            # 4. 获取当前人格设置
-            current_persona = await self._get_current_persona()
+            # 4. 获取当前人格设置 (针对特定群组)
+            current_persona = await self._get_current_persona(group_id)
             
             # 5. 质量监控评估
             quality_metrics = await self.quality_monitor.evaluate_learning_batch(
                 current_persona, 
-                await self._generate_updated_persona(current_persona, style_analysis),
+                await self._generate_updated_persona(group_id, current_persona, style_analysis), # 传入 group_id
                 filtered_messages
             )
             
             # 6. 根据质量评估决定是否应用更新
             if quality_metrics.consistency_score >= self.quality_threshold:
-                await self._apply_learning_updates(style_analysis, filtered_messages)
-                logger.info(f"学习更新已应用，质量得分: {quality_metrics.consistency_score:.3f}")
+                await self._apply_learning_updates(group_id, style_analysis, filtered_messages) # 传入 group_id
+                logger.info(f"学习更新已应用，质量得分: {quality_metrics.consistency_score:.3f} for group {group_id}")
             else:
-                logger.warning(f"学习质量不达标，跳过更新，得分: {quality_metrics.consistency_score:.3f}")
+                logger.warning(f"学习质量不达标，跳过更新，得分: {quality_metrics.consistency_score:.3f} for group {group_id}")
             
             # 7. 标记消息为已处理
             await self._mark_messages_processed(unprocessed_messages)
@@ -301,47 +305,34 @@ class ProgressiveLearningService:
         
         return filtered
 
-    async def _get_current_persona(self) -> Dict[str, Any]:
-        """获取当前人格设置"""
+    async def _get_current_persona(self, group_id: str) -> Dict[str, Any]:
+        """获取当前人格设置 (针对特定群组)"""
         try:
-            # 这里应该调用AstrBot的人格获取API
-            # 简化实现，返回默认结构
+            # 通过 PersonaManagerService 获取当前人格
+            persona = await self.persona_manager.get_current_persona(group_id)
+            if persona:
+                return persona
+            # 如果没有特定群组的人格，则返回默认结构
             return {
                 'prompt': self.config.current_persona or "默认人格",
                 'style_parameters': {},
                 'last_updated': datetime.now().isoformat()
             }
         except Exception as e:
-            logger.error(f"获取当前人格失败: {e}")
+            logger.error(f"获取当前人格失败 for group {group_id}: {e}")
             return {'prompt': '默认人格', 'style_parameters': {}}
 
-    async def _generate_updated_persona(self, current_persona: Dict[str, Any], style_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    async def _generate_updated_persona(self, group_id: str, current_persona: Dict[str, Any], style_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """生成更新后的人格"""
         try:
             provider = self.context.get_using_provider()
             if not provider:
                 return current_persona
             
-            prompt = f"""
-基于当前人格设定和风格分析结果，生成优化后的人格prompt：
-
-当前人格：
-{current_persona.get('prompt', '')}
-
-风格分析结果：
-{json.dumps(style_analysis, ensure_ascii=False, indent=2)}
-
-请返回JSON格式的更新后人格：
-{{
-    "prompt": "优化后的人格描述",
-    "style_parameters": {{
-        "formality": 0.0-1.0,
-        "enthusiasm": 0.0-1.0,
-        "interactivity": 0.0-1.0
-    }},
-    "update_reason": "更新原因说明"
-}}
-"""
+            prompt = self.prompts.PROGRESSIVE_LEARNING_GENERATE_UPDATED_PERSONA_PROMPT.format(
+                current_persona_prompt=current_persona.get('prompt', ''),
+                style_analysis_result=json.dumps(style_analysis, ensure_ascii=False, indent=2)
+            )
             
             response = await provider.text_chat(prompt)
             
@@ -350,31 +341,28 @@ class ProgressiveLearningService:
                 updated_persona['last_updated'] = datetime.now().isoformat()
                 return updated_persona
             except json.JSONDecodeError:
-                logger.warning("人格更新JSON解析失败，保持原有人格")
+                logger.warning(f"人格更新JSON解析失败 for group {group_id}，保持原有人格")
                 return current_persona
                 
         except Exception as e:
-            logger.error(f"生成更新人格失败: {e}")
+            logger.error(f"生成更新人格失败 for group {group_id}: {e}")
             return current_persona
 
-    async def _apply_learning_updates(self, style_analysis: Dict[str, Any], messages: List[Dict[str, Any]]):
+    async def _apply_learning_updates(self, group_id: str, style_analysis: Dict[str, Any], messages: List[Dict[str, Any]]):
         """应用学习更新"""
         try:
-            # 1. 更新人格prompt（这里需要调用AstrBot的API）
-            # 简化实现，记录日志
-            logger.info("应用人格更新")
+            # 1. 更新人格prompt（通过 PersonaManagerService）
+            logger.info(f"应用人格更新 for group {group_id}")
+            update_success = await self.persona_manager.update_persona(group_id, style_analysis, messages)
+            if not update_success:
+                logger.error(f"通过 PersonaManagerService 更新人格失败 for group {group_id}")
             
-            # 2. 添加对话样本到语言模仿列表（这里需要调用AstrBot的API）
-            # 简化实现，记录日志
-            sample_messages = [msg['message'] for msg in messages[:5]]  # 取前5条作为样本
-            logger.info(f"添加 {len(sample_messages)} 条对话样本到模仿列表")
-            
-            # 3. 记录学习更新
+            # 2. 记录学习更新
             if self.current_session:
                 self.current_session.style_updates += 1
             
         except Exception as e:
-            logger.error(f"应用学习更新失败: {e}")
+            logger.error(f"应用学习更新失败 for group {group_id}: {e}")
 
     async def _mark_messages_processed(self, messages: List[Dict[str, Any]]):
         """标记消息为已处理"""

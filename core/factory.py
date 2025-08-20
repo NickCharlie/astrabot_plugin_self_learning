@@ -17,6 +17,7 @@ from .patterns import StrategyFactory, ServiceRegistry, EventBus
 from ..config import PluginConfig
 from .llm_client import LLMClient # 导入 LLMClient
 from ..exceptions import ServiceError # 从 exceptions.py 导入 ServiceError
+from ..statics import prompts # 导入 prompts 模块
 
 
 class ServiceFactory(IServiceFactory):
@@ -41,6 +42,10 @@ class ServiceFactory(IServiceFactory):
             self._llm_client = LLMClient()
             self._logger.info("LLM 客户端初始化成功")
         return self._llm_client
+
+    def get_prompts(self) -> Any:
+        """获取 Prompt 静态数据"""
+        return prompts
 
     def create_message_collector(self) -> IMessageCollector:
         """创建消息收集器"""
@@ -74,7 +79,14 @@ class ServiceFactory(IServiceFactory):
         try:
             from ..services.style_analyzer import StyleAnalyzerService
             
-            service = StyleAnalyzerService(self.config, self.context, self.create_database_manager()) # 传递 DatabaseManager
+            # 传递 DatabaseManager 和 LLMClient
+            service = StyleAnalyzerService(
+                self.config, 
+                self.context, 
+                self.create_database_manager(),
+                self.create_llm_client(), # 传递 LLMClient 实例
+                self.get_prompts() # 传递 prompts
+            ) 
             self._service_cache[cache_key] = service
             self._registry.register_service("style_analyzer", service)
             
@@ -120,7 +132,12 @@ class ServiceFactory(IServiceFactory):
         try:
             from ..services.learning_quality_monitor import LearningQualityMonitor
             
-            service = LearningQualityMonitor(self.config, self.context, self.create_llm_client()) # 传递 LLMClient
+            service = LearningQualityMonitor(
+                self.config, 
+                self.context, 
+                self.create_llm_client(), # 传递 LLMClient
+                self.get_prompts() # 传递 prompts
+            ) 
             self._service_cache[cache_key] = service
             self._registry.register_service("quality_monitor", service)
             
@@ -170,7 +187,13 @@ class ServiceFactory(IServiceFactory):
             refine_llm_client = self.create_llm_client()
             reinforce_llm_client = self.create_llm_client() # 假设使用同一个LLMClient实例，如果需要不同配置可以再细分
 
-            service = LightweightMLAnalyzer(self.config, db_manager, refine_llm_client, reinforce_llm_client)
+            service = LightweightMLAnalyzer(
+                self.config, 
+                db_manager, 
+                refine_llm_client, 
+                reinforce_llm_client,
+                self.get_prompts() # 传递 prompts
+            )
             self._service_cache[cache_key] = service
             
             self._logger.info("创建ML分析器成功")
@@ -193,7 +216,13 @@ class ServiceFactory(IServiceFactory):
             # 需要数据库管理器
             db_manager = self.create_database_manager()
             
-            service = IntelligentResponder(self.config, self.context, db_manager, self.create_llm_client()) # 传递 LLMClient
+            service = IntelligentResponder(
+                self.config, 
+                self.context, 
+                db_manager, 
+                self.create_llm_client(), # 传递 LLMClient
+                self.get_prompts() # 传递 prompts
+            )
             self._service_cache[cache_key] = service
             
             self._logger.info("创建智能回复器成功")
@@ -239,7 +268,21 @@ class ServiceFactory(IServiceFactory):
             from ..services.multidimensional_analyzer import MultidimensionalAnalyzer
             
             db_manager = self.create_database_manager() # 获取 DatabaseManager 实例
-            service = MultidimensionalAnalyzer(self.config, db_manager, self.context)  # 传递 db_manager 和 context
+            
+            # 通过工厂方法获取 LLMClient 实例并传递
+            filter_llm_client = self.create_llm_client()
+            refine_llm_client = self.create_llm_client()
+            reinforce_llm_client = self.create_llm_client()
+
+            service = MultidimensionalAnalyzer(
+                self.config, 
+                db_manager, 
+                self.context,
+                filter_llm_client=filter_llm_client,
+                refine_llm_client=refine_llm_client,
+                reinforce_llm_client=reinforce_llm_client,
+                prompts=self.get_prompts() # 传递 prompts
+            )
             self._service_cache[cache_key] = service
             
             self._logger.info("创建多维度分析器成功")
@@ -269,7 +312,9 @@ class ServiceFactory(IServiceFactory):
                 message_collector=self.create_message_collector(),
                 multidimensional_analyzer=self.create_multidimensional_analyzer(),
                 style_analyzer=self.create_style_analyzer(),
-                quality_monitor=self.create_quality_monitor()
+                quality_monitor=self.create_quality_monitor(),
+                persona_manager=self.create_persona_manager(), # 传递 persona_manager 实例
+                prompts=self.get_prompts() # 传递 prompts
             )
             self._service_cache[cache_key] = service
             self._registry.register_service("progressive_learning", service)
@@ -311,7 +356,13 @@ class ServiceFactory(IServiceFactory):
         try:
             from ..services.persona_updater import PersonaUpdater
             backup_manager = self.create_persona_backup_manager()
-            service = PersonaUpdater(self.config, self.context, backup_manager, self.create_llm_client())
+            service = PersonaUpdater(
+                self.config, 
+                self.context, 
+                backup_manager, 
+                self.create_llm_client(), # 传递 LLMClient
+                self.get_prompts() # 传递 prompts
+            )
             self._service_cache[cache_key] = service
             self._registry.register_service("persona_updater", service)
             self._logger.info("创建人格更新器成功")
@@ -384,7 +435,7 @@ class ServiceFactory(IServiceFactory):
         return self._registry.get_service_status()
     
     def clear_cache(self):
-        """清理服务���存"""
+        """清理服务缓存"""
         self._service_cache.clear()
         self._logger.info("服务缓存已清理")
 
@@ -402,10 +453,11 @@ class QQFilter:
 
 
 class MessageFilter:
-    def __init__(self, config: PluginConfig, context: Context, llm_client: LLMClient):
+    def __init__(self, config: PluginConfig, context: Context, llm_client: LLMClient, prompts: Any):
         self.config = config
         self.context = context
         self.llm_client = llm_client
+        self.prompts = prompts  # 保存 prompts
         self._logger = logger
     
     async def is_suitable_for_learning(self, message: str) -> bool:
@@ -423,12 +475,10 @@ class MessageFilter:
         try:
             current_persona = self.context.get_using_provider().curr_personality.prompt if self.context.get_using_provider() else "默认人格"
             
-            prompt = f"""请判断以下消息是否与当前人格匹配，特征鲜明，且具有学习意义。
-当前人格描述: {current_persona}
-消息内容: "{message}"
-
-请以 JSON 格式返回判断结果，包含 'suitable' (布尔值) 和 'confidence' (0.0-1.0 之间的浮点数)。
-例如: {{"suitable": true, "confidence": 0.9}}"""
+            prompt = self.prompts.MESSAGE_FILTER_SUITABLE_FOR_LEARNING_PROMPT.format(
+                current_persona=current_persona,
+                message=message
+            )
             
             response = await self.llm_client.chat_completion(
                 api_url=self.config.filter_api_url,
@@ -512,9 +562,11 @@ class ComponentFactory:
         """创建QQ号过滤器"""
         return QQFilter(self.config.target_qq_list)
     
-    def create_message_filter(self, context: Context, llm_client: LLMClient): # 接收 llm_client
+    def create_message_filter(self, context: Context): # 不再直接接收 llm_client
         """创建消息过滤器"""
-        return MessageFilter(self.config, context, llm_client) # 传递 llm_client
+        llm_client = self.service_factory.create_llm_client() # 通过 service_factory 获取 llm_client
+        prompts = self.service_factory.get_prompts() # 通过 service_factory 获取 prompts
+        return MessageFilter(self.config, context, llm_client, prompts) # 传递 llm_client 和 prompts
     
     def create_learning_scheduler(self, plugin_instance):
         """创建学习调度器"""
@@ -524,7 +576,8 @@ class ComponentFactory:
         """创建人格更新器"""
         from ..services.persona_updater import PersonaUpdater as ActualPersonaUpdater # 导入实际的 PersonaUpdater
         llm_client = self.service_factory.create_llm_client() # 通过注入的 service_factory 获取 LLMClient 实例
-        return ActualPersonaUpdater(self.config, context, backup_manager, llm_client) # 传递 config 和 llm_client
+        prompts = self.service_factory.get_prompts() # 获取 prompts
+        return ActualPersonaUpdater(self.config, context, backup_manager, llm_client, prompts) # 传递 config, llm_client 和 prompts
 
 
 # 全局工厂实例管理器
@@ -557,6 +610,19 @@ class FactoryManager:
             raise ServiceError("组件工厂未初始化")
         return self._component_factory
     
+    def get_service(self, service_name: str) -> Any:
+        """
+        通过名称获取已创建的服务实例。
+        此方法委托给 ServiceFactory 的内部缓存。
+        """
+        if self._service_factory is None:
+            raise ServiceError("服务工厂未初始化，无法获取服务")
+        
+        service = self._service_factory._service_cache.get(service_name)
+        if service is None:
+            raise ServiceError(f"服务 '{service_name}' 未找到或未初始化。请确保服务已通过 ServiceFactory 的 create_xxx 方法创建。")
+        return service
+
     async def cleanup(self):
         """清理所有工厂"""
         if self._service_factory:

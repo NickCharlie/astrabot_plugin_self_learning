@@ -1,0 +1,328 @@
+/* 通用样式 */
+body {
+    font-family: 'Roboto', sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f0f2f5;
+    display: flex;
+    min-height: 100vh;
+    color: #333;
+    justify-content: center; /* 水平居中 */
+    align-items: center; /* 垂直居中 */
+}
+
+/* 隐藏类 */
+.hidden {
+    display: none !important;
+}
+
+/* 登录容器样式 */
+.login-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 100vh;
+    background-color: #f0f2f5;
+}
+
+.login-card {
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    padding: 40px;
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+}
+
+.login-card h2 {
+    margin-top: 0;
+    margin-bottom: 30px;
+    color: #1a73e8;
+    font-size: 28px;
+    font-weight: 500;
+}
+
+.login-card .form-group {
+    margin-bottom: 20px;
+    text-align: left;
+}
+
+.login-card label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: #555;
+}
+
+.login-card input[type="text"],
+.login-card input[type="password"] {
+    width: calc(100% - 24px); /* 减去 padding */
+    padding: 12px;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+    font-size: 16px;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.login-card input[type="text"]:focus,
+.login-card input[type="password"]:focus {
+    outline: none;
+    border-color: #1a73e8;
+    box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+}
+
+.login-card .btn-primary {
+    width: 100%;
+    padding: 12px;
+    font-size: 18px;
+    margin-top: 20px;
+}
+
+.error-message {
+    color: #d93025;
+    margin-top: 15px;
+    font-size: 14px;
+}
+
+.success-message { /* 新增成功消息样式 */
+    color: #155724;
+    background-color: #d4edda;
+    border: 1px solid #c3e6cb;
+    padding: 10px;
+    border-radius: 5px;
+    margin-top: 15px;
+    font-size: 14px;
+}
+
+/* 侧边栏 */
+.sidebar {
+    width: 250px;
+    background-color: #fff;
+    box-shadow: 2px 0 6px rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+    padding-top: 20px;
+    min-height: 100vh; /* 确保侧边栏高度 */
+}
+
+.sidebar-header {
+    padding: 0 20px 20px 20px;
+    border-bottom: 1px solid #eee;
+}
+
+.sidebar-header h2 {
+    color: #1a73e8;
+    font-size: 24px;
+    font-weight: 500;
+    margin: 0;
+}
+
+.sidebar-menu {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    flex-grow: 1;
+}
+
+.menu-item {
+    display: flex;
+    align-items: center;
+    padding: 15px 20px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+
+.menu-item:hover {
+    background-color: #e8f0fe;
+}
+
+.menu-item.active {
+    background-color: #e8f0fe;
+    color: #1a73e8;
+    border-right: 3px solid #1a73e8;
+}
+
+.menu-item i.material-icons {
+    margin-right: 15px;
+    font-size: 20px;
+}
+
+.menu-item span {
+    font-weight: 500;
+}
+
+/* 主内容区域 */
+.main-content {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: row; /* 调整为横向布局，因为侧边栏和主内容区是并排的 */
+    width: calc(100% - 250px); /* 减去侧边栏宽度 */
+}
+
+.main-content-area { /* 新增的类，用于包裹原 main-content 的内容 */
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.topbar {
+    background-color: #fff;
+    padding: 20px 30px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.topbar h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 400;
+    color: #333;
+}
+
+.content-area {
+    flex-grow: 1;
+    padding: 30px;
+    overflow-y: auto;
+}
+
+.page {
+    display: none; /* 默认隐藏所有页面 */
+}
+
+.page.active {
+    display: block; /* 显示当前活动页面 */
+}
+
+/* 卡片样式 */
+.card {
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    padding: 25px;
+    margin-bottom: 20px;
+}
+
+.card h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    color: #333;
+    font-size: 20px;
+    font-weight: 500;
+}
+
+/* 表单组 */
+.form-group {
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+}
+
+.form-group label {
+    flex: 1;
+    font-weight: 400;
+    color: #555;
+    margin-right: 15px;
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group select {
+    flex: 2;
+    padding: 10px 12px;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+    font-size: 16px;
+    transition: border-color 0.3s ease;
+}
+
+.form-group input[type="text"]:focus,
+.form-group input[type="number"]:focus,
+.form-group select:focus {
+    outline: none;
+    border-color: #1a73e8;
+    box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+}
+
+.form-group input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    accent-color: #1a73e8; /* 改变复选框颜色 */
+}
+
+/* 按钮 */
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 500;
+    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.btn-primary {
+    background-color: #1a73e8;
+    color: #fff;
+}
+
+.btn-primary:hover {
+    background-color: #176cdb;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.btn-secondary {
+    background-color: #f0f0f0;
+    color: #333;
+    margin-left: 10px;
+}
+
+.btn-secondary:hover {
+    background-color: #e0e0e0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 列表样式 */
+ul#persona-updates-list {
+    list-style: none;
+    padding: 0;
+}
+
+ul#persona-updates-list li {
+    background-color: #f8f9fa;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 15px;
+    margin-bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+ul#persona-updates-list li strong {
+    color: #1a73e8;
+}
+
+ul#persona-updates-list li .actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+/* 性能监控部分 */
+#llm-calls-metrics div,
+#api-response-times-metrics div {
+    margin-bottom: 10px;
+    padding: 10px;
+    background-color: #e8f0fe;
+    border-left: 4px solid #1a73e8;
+    border-radius: 4px;
+}
+
+#llm-calls-metrics div p,
+#api-response-times-metrics div p {
+    margin: 5px 0;
+}

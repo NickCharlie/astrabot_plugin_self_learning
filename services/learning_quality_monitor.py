@@ -39,10 +39,11 @@ class LearningAlert:
 class LearningQualityMonitor:
     """学习质量监控器"""
     
-    def __init__(self, config: PluginConfig, context: Context, llm_client):
+    def __init__(self, config: PluginConfig, context: Context, llm_client, prompts: Any):
         self.config = config
         self.context = context
         self._llm_client = llm_client # 添加 llm_client
+        self.prompts = prompts # 添加 prompts
         
         # 监控阈值
         self.consistency_threshold = 0.7    # 一致性阈值
@@ -114,23 +115,10 @@ class LearningQualityMonitor:
                 logger.warning("LLM客户端未初始化，无法使用LLM计算一致性，使用默认值。")
                 return 0.5
             
-            prompt = f"""
-                请分析以下两个人格设定的一致性程度，给出0-1之间的得分：
-
-                原始人格：
-                {original_persona.get('prompt', '')}
-
-                更新人格：
-                {updated_persona.get('prompt', '')}
-
-                请从以下维度评估一致性：
-                1. 核心性格特征是否保持
-                2. 语言风格是否连贯
-                3. 价值观是否一致
-                4. 行为模式是否稳定
-
-                直接返回一个0-1之间的数值，不需要其他解释。
-                """
+            prompt = self.prompts.LEARNING_QUALITY_MONITOR_CONSISTENCY_PROMPT.format(
+                original_persona_prompt=original_persona.get('prompt', ''),
+                updated_persona_prompt=updated_persona.get('prompt', '')
+            )
             
             # 调用模型分析
             response = await self._llm_client.chat_completion(
@@ -213,18 +201,9 @@ class LearningQualityMonitor:
 
         messages_text = "\n".join([msg['message'] for msg in messages])
         
-        prompt = f"""
-                请分析以下消息集合的情感平衡性，并以JSON格式返回积极和消极情感的置信度分数（0-1之间）。
-
-                消息集合：
-                {messages_text}
-
-                请只返回一个JSON对象，例如：
-                {{
-                    "积极": 0.8,
-                    "消极": 0.2
-                }}
-                """
+        prompt = self.prompts.LEARNING_QUALITY_MONITOR_EMOTIONAL_BALANCE_PROMPT.format(
+            messages_text=messages_text
+        )
         try:
             response = await self._llm_client.chat_completion(
                 prompt=prompt,

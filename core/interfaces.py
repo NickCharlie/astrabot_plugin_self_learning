@@ -39,8 +39,23 @@ class AnalysisResult:
     success: bool
     confidence: float
     data: Dict[str, Any]
-    error: Optional[str] = None
     timestamp: float = 0.0
+    error: Optional[str] = None
+
+
+@dataclass
+class PersonaUpdateRecord:
+    """需要人工审查的人格更新记录"""
+    timestamp: float
+    group_id: str
+    update_type: str # 例如: "prompt_update", "style_attribute_update"
+    original_content: str # 更新前的内容
+    new_content: str # 更新后的内容
+    reason: str # 需要审查的原因
+    id: Optional[int] = None # 数据库ID
+    status: str = "pending" # "pending", "approved", "rejected"
+    reviewer_comment: Optional[str] = None
+    review_time: Optional[float] = None
 
 
 class IMessageCollector(ABC):
@@ -146,8 +161,23 @@ class IPersonaUpdater(ABC):
     """人格更新器接口 - 负责执行具体的人格更新逻辑"""
     
     @abstractmethod
-    async def update_persona_with_style(self, style_analysis: Dict[str, Any], filtered_messages: List[MessageData]) -> bool:
+    async def update_persona_with_style(self, group_id: str, style_analysis: Dict[str, Any], filtered_messages: List[MessageData]) -> bool:
         """根据风格分析和筛选过的消息更新人格"""
+        pass
+
+    @abstractmethod
+    async def record_persona_update_for_review(self, record: PersonaUpdateRecord) -> int:
+        """记录需要人工审查的人格更新"""
+        pass
+
+    @abstractmethod
+    async def get_pending_persona_updates(self) -> List[PersonaUpdateRecord]:
+        """获取所有待审查的人格更新"""
+        pass
+
+    @abstractmethod
+    async def review_persona_update(self, update_id: int, status: str, reviewer_comment: Optional[str] = None) -> bool:
+        """审查人格更新"""
         pass
 
 

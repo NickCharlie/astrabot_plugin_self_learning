@@ -15,7 +15,8 @@ class PluginConfig:
     enable_message_capture: bool = True
     enable_auto_learning: bool = True  
     enable_realtime_learning: bool = False
-    enable_web_interface: bool = False
+    enable_web_interface: bool = True
+    web_interface_port: int = 7833 # 新增 Web 界面端口配置
     
     # QQ号设置
     target_qq_list: List[str] = field(default_factory=list)
@@ -54,6 +55,9 @@ class PluginConfig:
     style_analysis_batch_size: int = 100    # 风格分析批次大小
     style_update_threshold: float = 0.8     # 风格更新阈值
     
+    # 消息统计
+    total_messages_collected: int = 0       # 收集到的消息总数
+    
     # 机器学习设置
     enable_ml_analysis: bool = True          # 启用ML分析
     max_ml_sample_size: int = 100           # ML样本最大数量
@@ -61,7 +65,6 @@ class PluginConfig:
     
     # 智能回复设置
     enable_intelligent_reply: bool = False   # 启用智能回复
-    reply_probability: float = 0.1          # 回复概率
     context_window_size: int = 5            # 上下文窗口大小
     intelligent_reply_keywords: List[str] = field(default_factory=lambda: ['bot', 'ai', '人工智能', '机器人', '助手']) # 智能回复关键词
     intelligent_responder_system_prompt: Optional[str] = None # 智能回复系统提示
@@ -97,65 +100,81 @@ class PluginConfig:
     def create_from_config(cls, config: dict, data_dir: Optional[str] = None) -> 'PluginConfig':
         """从AstrBot配置创建插件配置"""
         
-        # 从配置中提取插件相关设置
-        plugin_settings = config.get('self_learning_settings', {})
+        # 从配置中提取各个配置组
+        # 根据 _conf_schema.json 的结构，配置项是直接在顶层，而不是嵌套在 'self_learning_settings' 下
+        basic_settings = config.get('Self_Learning_Basic', {})
+        target_settings = config.get('Target_Settings', {})
+        model_config = config.get('Model_Configuration', {})
+        learning_params = config.get('Learning_Parameters', {})
+        filter_params = config.get('Filter_Parameters', {})
+        style_analysis = config.get('Style_Analysis', {})
+        advanced_settings = config.get('Advanced_Settings', {})
+        ml_settings = config.get('Machine_Learning_Settings', {})
+        intelligent_reply_settings = config.get('Intelligent_Reply_Settings', {})
+        persona_backup_settings = config.get('Persona_Backup_Settings', {})
         
         return cls(
-            enable_message_capture=plugin_settings.get('enable_message_capture', True),
-            enable_auto_learning=plugin_settings.get('enable_auto_learning', True),
-            enable_realtime_learning=plugin_settings.get('enable_realtime_learning', False),
-            enable_web_interface=plugin_settings.get('enable_web_interface', False),
+            enable_message_capture=basic_settings.get('enable_message_capture', True),
+            enable_auto_learning=basic_settings.get('enable_auto_learning', True),
+            enable_realtime_learning=basic_settings.get('enable_realtime_learning', False),
+            enable_web_interface=basic_settings.get('enable_web_interface', True),
+            web_interface_port=config.get('web_interface_port', 7833), # Web 界面端口可能在顶层或特定组中，这里假设在顶层或默认值
             
-            target_qq_list=plugin_settings.get('target_qq_list', []),
+            target_qq_list=target_settings.get('target_qq_list', []),
+            current_persona_name=target_settings.get('current_persona_name', 'default'),
             
-            filter_model_name=plugin_settings.get('filter_model_name', 'gpt-4o-mini'),
-            refine_model_name=plugin_settings.get('refine_model_name', 'gpt-4o'),
-            reinforce_model_name=plugin_settings.get('reinforce_model_name', 'gpt-4o'),
+            filter_model_name=model_config.get('filter_model_name', 'gpt-4o-mini'),
+            refine_model_name=model_config.get('refine_model_name', 'gpt-4o'),
+            reinforce_model_name=model_config.get('reinforce_model_name', 'gpt-4o'),
 
-            filter_provider_id=plugin_settings.get('filter_provider_id', None),
-            refine_provider_id=plugin_settings.get('refine_provider_id', None),
-            reinforce_provider_id=plugin_settings.get('reinforce_provider_id', None),
+            filter_provider_id=model_config.get('filter_provider_id', None),
+            refine_provider_id=model_config.get('refine_provider_id', None),
+            reinforce_provider_id=model_config.get('reinforce_provider_id', None),
 
-            filter_api_url=plugin_settings.get('filter_api_url', None),
-            filter_api_key=plugin_settings.get('filter_api_key', None),
-            refine_api_url=plugin_settings.get('refine_api_url', None),
-            refine_api_key=plugin_settings.get('refine_api_key', None),
-            reinforce_api_url=plugin_settings.get('reinforce_api_url', None),
-            reinforce_api_key=plugin_settings.get('reinforce_api_key', None),
+            filter_api_url=model_config.get('filter_api_url', None),
+            filter_api_key=model_config.get('filter_api_key', None),
+            refine_api_url=model_config.get('refine_api_url', None),
+            refine_api_key=model_config.get('refine_api_key', None),
+            reinforce_api_url=model_config.get('reinforce_api_url', None),
+            reinforce_api_key=model_config.get('reinforce_api_key', None),
             
-            current_persona_name=plugin_settings.get('current_persona_name', 'default'),
+            learning_interval_hours=learning_params.get('learning_interval_hours', 6),
+            min_messages_for_learning=learning_params.get('min_messages_for_learning', 50),
+            max_messages_per_batch=learning_params.get('max_messages_per_batch', 200),
             
-            learning_interval_hours=plugin_settings.get('learning_interval_hours', 6),
-            min_messages_for_learning=plugin_settings.get('min_messages_for_learning', 50),
-            max_messages_per_batch=plugin_settings.get('max_messages_per_batch', 200),
+            message_min_length=filter_params.get('message_min_length', 5),
+            message_max_length=filter_params.get('message_max_length', 500),
+            confidence_threshold=filter_params.get('confidence_threshold', 0.7),
             
-            message_min_length=plugin_settings.get('message_min_length', 5),
-            message_max_length=plugin_settings.get('message_max_length', 500),
-            confidence_threshold=plugin_settings.get('confidence_threshold', 0.7),
+            style_analysis_batch_size=style_analysis.get('style_analysis_batch_size', 100),
+            style_update_threshold=style_analysis.get('style_update_threshold', 0.8),
             
-            style_analysis_batch_size=plugin_settings.get('style_analysis_batch_size', 100),
-            style_update_threshold=plugin_settings.get('style_update_threshold', 0.8),
+            # 消息统计 (这个字段通常不是从外部配置加载，而是内部维护的，这里保留默认值)
+            total_messages_collected=0, 
             
-            # 新增的字段
-            enable_ml_analysis=plugin_settings.get('enable_ml_analysis', True),
-            max_ml_sample_size=plugin_settings.get('max_ml_sample_size', 100),
-            ml_cache_timeout_hours=plugin_settings.get('ml_cache_timeout_hours', 1),
-            enable_intelligent_reply=plugin_settings.get('enable_intelligent_reply', False),
-            reply_probability=plugin_settings.get('reply_probability', 0.1),
-            context_window_size=plugin_settings.get('context_window_size', 5),
-            intelligent_reply_keywords=plugin_settings.get('intelligent_reply_keywords', []),
-            intelligent_responder_system_prompt=plugin_settings.get('intelligent_responder_system_prompt', None),
-            intelligent_responder_temperature=plugin_settings.get('intelligent_responder_temperature', 0.7),
-            auto_backup_enabled=plugin_settings.get('auto_backup_enabled', True),
-            backup_interval_hours=plugin_settings.get('backup_interval_hours', 24),
-            max_backups_per_group=plugin_settings.get('max_backups_per_group', 10),
-            debug_mode=plugin_settings.get('debug_mode', False),
-            save_raw_messages=plugin_settings.get('save_raw_messages', True),
-            auto_backup_interval_days=plugin_settings.get('auto_backup_interval_days', 7),
-            persona_merge_strategy=plugin_settings.get('persona_merge_strategy', 'smart'),
-            max_mood_imitation_dialogs=plugin_settings.get('max_mood_imitation_dialogs', 20),
-            enable_persona_evolution=plugin_settings.get('enable_persona_evolution', True),
-            persona_compatibility_threshold=plugin_settings.get('persona_compatibility_threshold', 0.6),
+            enable_ml_analysis=ml_settings.get('enable_ml_analysis', True),
+            max_ml_sample_size=ml_settings.get('max_ml_sample_size', 100),
+            ml_cache_timeout_hours=ml_settings.get('ml_cache_timeout_hours', 1),
+            
+            enable_intelligent_reply=intelligent_reply_settings.get('enable_intelligent_reply', False),
+            context_window_size=intelligent_reply_settings.get('context_window_size', 5),
+            intelligent_reply_keywords=intelligent_reply_settings.get('intelligent_reply_keywords', []),
+            intelligent_responder_system_prompt=intelligent_reply_settings.get('intelligent_responder_system_prompt', None),
+            intelligent_responder_temperature=intelligent_reply_settings.get('intelligent_responder_temperature', 0.7),
+            
+            auto_backup_enabled=persona_backup_settings.get('auto_backup_enabled', True),
+            backup_interval_hours=persona_backup_settings.get('backup_interval_hours', 24),
+            max_backups_per_group=persona_backup_settings.get('max_backups_per_group', 10),
+            
+            debug_mode=advanced_settings.get('debug_mode', False),
+            save_raw_messages=advanced_settings.get('save_raw_messages', True),
+            auto_backup_interval_days=advanced_settings.get('auto_backup_interval_days', 7),
+            
+            # PersonaUpdater配置 (这些可能不是直接从 _conf_schema.json 的顶层获取，而是从其他地方或默认值)
+            persona_merge_strategy=config.get('persona_merge_strategy', 'smart'), 
+            max_mood_imitation_dialogs=config.get('max_mood_imitation_dialogs', 20),
+            enable_persona_evolution=config.get('enable_persona_evolution', True),
+            persona_compatibility_threshold=config.get('persona_compatibility_threshold', 0.6),
             
             # 传入数据目录
             data_dir=data_dir

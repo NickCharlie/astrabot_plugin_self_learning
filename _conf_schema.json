@@ -26,7 +26,7 @@
         "description": "启用Web管理界面", 
         "type": "bool",
         "hint": "是否启用Web界面用于查看和管理学习数据",
-        "default": false
+        "default": true
       }
     }
   },

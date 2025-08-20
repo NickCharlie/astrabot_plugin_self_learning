@@ -71,23 +71,29 @@ class ContextualPattern:
 class MultidimensionalAnalyzer:
     """多维度分析器"""
     
-    def __init__(self, config: PluginConfig, db_manager: DatabaseManager, context=None): # 添加 db_manager 参数
+    def __init__(self, config: PluginConfig, db_manager: DatabaseManager, context=None,
+                 filter_llm_client: Optional[LLMClient] = None,
+                 refine_llm_client: Optional[LLMClient] = None,
+                 reinforce_llm_client: Optional[LLMClient] = None,
+                 prompts: Any = None): # 添加 prompts 参数
         self.config = config
         self.context = context
         self.db_manager: DatabaseManager = db_manager # 直接传入 DatabaseManager 实例
         
-        # 初始化自定义 LLM 客户端
-        self.filter_llm_client: Optional[LLMClient] = LLMClient() # 修改实例化方式
-        if not (config.filter_api_url and config.filter_api_key and config.filter_model_name):
-            logger.warning("筛选模型LLM配置不完整，将无法使用LLM进行消息筛选。")
+        # LLM 客户端通过参数传入
+        self.filter_llm_client = filter_llm_client
+        self.refine_llm_client = refine_llm_client
+        self.reinforce_llm_client = reinforce_llm_client
+        self.prompts = prompts # 保存 prompts
 
-        self.refine_llm_client: Optional[LLMClient] = LLMClient() # 修改实例化方式
-        if not (config.refine_api_url and config.refine_api_key and config.refine_model_name):
-            logger.warning("提炼模型LLM配置不完整，将无法使用LLM进行深度分析。")
+        if not (self.filter_llm_client and config.filter_api_url and config.filter_api_key and config.filter_model_name):
+            logger.warning(f"筛选模型LLM配置不完整：API URL: {config.filter_api_url}, API Key: {'***' if config.filter_api_key else 'None'}, Model Name: {config.filter_model_name}。将无法使用LLM进行消息筛选。")
 
-        self.reinforce_llm_client: Optional[LLMClient] = LLMClient() # 修改实例化方式
-        if not (config.reinforce_api_url and config.reinforce_api_key and config.reinforce_model_name):
-            logger.warning("强化模型LLM配置不完整，将无法使用LLM进行强化学习。")
+        if not (self.refine_llm_client and config.refine_api_url and config.refine_api_key and config.refine_model_name):
+            logger.warning(f"提炼模型LLM配置不完整：API URL: {config.refine_api_url}, API Key: {'***' if config.refine_api_key else 'None'}, Model Name: {config.refine_model_name}。将无法使用LLM进行深度分析。")
+
+        if not (self.reinforce_llm_client and config.reinforce_api_url and config.reinforce_api_key and config.reinforce_model_name):
+            logger.warning(f"强化模型LLM配置不完整：API URL: {config.reinforce_api_url}, API Key: {'***' if config.reinforce_api_key else 'None'}, Model Name: {config.reinforce_model_name}。将无法使用LLM进行强化学习。")
         
         # 用户画像存储
         self.user_profiles: Dict[str, UserProfile] = {}
@@ -145,22 +151,10 @@ class MultidimensionalAnalyzer:
             logger.warning("筛选模型LLM配置不完整，跳过LLM消息筛选。")
             return True
 
-        prompt = f"""
-你是一个消息筛选专家，你的任务是判断一条消息是否具有以下特征：
-1. 与当前人格的对话风格和兴趣高度匹配。
-2. 消息内容特征鲜明，不平淡，具有一定的独特性或深度。
-3. 对学习当前人格的对话模式和知识有积极意义。
-
-当前人格描述：
-{current_persona_description}
-
-待筛选消息：
-"{message_text}"
-
-请你根据以上标准，对这条消息进行评估，并给出一个0到1之间的置信度分数。
-0表示完全不符合，1表示完全符合。
-请只返回一个0-1之间的数值，不需要其他说明。
-"""
+        prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT.format(
+            current_persona_description=current_persona_description,
+            message_text=message_text
+        )
         try:
             response = await self.filter_llm_client.chat_completion(
                 prompt=prompt,
@@ -196,27 +190,10 @@ class MultidimensionalAnalyzer:
                 "learning_value": 0.5
             }
 
-        prompt = f"""
-你是一个专业的对话质量评估专家，请根据以下标准对一条消息进行多维度量化评分。
-评分范围为0到1，0表示非常低，1表示非常高。
-
-当前人格描述：
-{current_persona_description}
-
-待评估消息：
-"{message_text}"
-
-请评估以下维度并以JSON格式返回结果：
-{{
-    "content_quality": 0.0-1.0,  // 消息的深度、信息量、原创性、表达清晰度
-    "relevance": 0.0-1.0,        // 与当前对话主题或人格的相关性
-    "emotional_positivity": 0.0-1.0, // 消息的情感倾向（积极程度）
-    "interactivity": 0.0-1.0,    // 消息是否引发或回应了互动（如提问、回应、@他人）
-    "learning_value": 0.0-1.0    // 消息对模型学习当前人格对话模式和知识的潜在贡献
-}}
-
-请确保返回有效的JSON格式，并且只包含JSON对象，不需要其他说明。
-"""
+        prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EVALUATE_MESSAGE_QUALITY_PROMPT.format(
+            current_persona_description=current_persona_description,
+            message_text=message_text
+        )
         try:
             response = await self.refine_llm_client.chat_completion(
                 prompt=prompt,
@@ -415,20 +392,9 @@ class MultidimensionalAnalyzer:
             return self._simple_emotional_analysis(message_text)
 
         try:
-            prompt = f"""
-请分析以下文本的情感倾向，并以JSON格式返回积极、消极、中性、疑问、惊讶五种情感的置信度分数（0-1之间）。
-
-文本内容："{message_text}"
-
-请只返回一个JSON对象，例如：
-{{
-    "积极": 0.8,
-    "消极": 0.1,
-    "中性": 0.1,
-    "疑问": 0.0,
-    "惊讶": 0.0
-}}
-"""
+            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
+                message_text=message_text
+            )
             try:
                 response = await self.refine_llm_client.chat_completion(
                     prompt=prompt,
@@ -692,20 +658,7 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_formal_level(self, text: str) -> float:
         """使用LLM计算正式程度"""
-        prompt_template = """
-请分析以下文本的正式程度，从0-1评分，0表示非常随意，1表示非常正式。
-
-分析维度：
-- 称谓使用（您/你）
-- 语言风格（书面语/口语）
-- 礼貌用语频率
-- 句式结构复杂度
-- 专业术语使用
-
-文本内容："{text}"
-
-请只返回一个0-1之间的数值，不需要其他说明。
-"""
+        prompt_template = self.prompts.MULTIDIMENSIONAL_ANALYZER_FORMAL_LEVEL_PROMPT
         return await self._call_llm_for_style_analysis(text, prompt_template, self._simple_formal_level, "正式程度")
 
     def _simple_formal_level(self, text: str) -> float:
@@ -721,20 +674,7 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_enthusiasm_level(self, text: str) -> float:
         """使用LLM计算热情程度"""
-        prompt_template = """
-请分析以下文本的热情程度，从0-1评分，0表示非常冷淡，1表示非常热情。
-
-分析维度：
-- 感叹号使用频率
-- 积极情感词汇
-- 表情符号使用
-- 语气强烈程度
-- 互动意愿表达
-
-文本内容："{text}"
-
-请只返回一个0-1之间的数值，不需要其他说明。
-"""
+        prompt_template = self.prompts.MULTIDIMENSIONAL_ANALYZER_ENTHUSIASM_LEVEL_PROMPT
         return await self._call_llm_for_style_analysis(text, prompt_template, self._simple_enthusiasm_level, "热情程度")
 
     def _simple_enthusiasm_level(self, text: str) -> float:
@@ -745,20 +685,7 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_question_tendency(self, text: str) -> float:
         """使用LLM计算提问倾向"""
-        prompt_template = """
-请分析以下文本的提问倾向，从0-1评分，0表示完全没有疑问，1表示强烈的求知欲和疑问。
-
-分析维度：
-- 疑问句数量
-- 求知欲表达
-- 不确定性表述
-- 征求意见的语气
-- 探索性语言
-
-文本内容："{text}"
-
-请只返回一个0-1之间的数值，不需要其他说明。
-"""
+        prompt_template = self.prompts.MULTIDIMENSIONAL_ANALYZER_QUESTION_TENDENCY_PROMPT
         return await self._call_llm_for_style_analysis(text, prompt_template, self._simple_question_tendency, "提问倾向")
 
     def _simple_question_tendency(self, text: str) -> float:
@@ -838,26 +765,9 @@ class MultidimensionalAnalyzer:
                 'social_connections': len(profile.social_connections)
             }
             
-            prompt = f"""
-请基于以下用户数据，生成深度的用户画像洞察。以JSON格式返回结果：
-
-用户数据：
-{json.dumps(user_data_summary, ensure_ascii=False, indent=2)}
-
-请分析以下维度并返回JSON格式结果：
-{{
-    "personality_type": "用户性格类型(如：外向型/内向型/混合型)",
-    "communication_preference": "沟通偏好描述",
-    "social_role": "在群体中的角色定位",
-    "activity_pattern_analysis": "活动模式分析",
-    "interest_alignment": "兴趣领域归类",
-    "learning_potential": "学习价值评估(0-1)",
-    "interaction_style": "互动风格特征",
-    "content_contribution": "内容贡献度评估"
-}}
-
-请确保返回有效的JSON格式。
-"""
+            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_DEEP_INSIGHTS_PROMPT.format(
+                user_data_summary=json.dumps(user_data_summary, ensure_ascii=False, indent=2)
+            )
             
             response = await self.refine_llm_client.chat_completion(
                 prompt=prompt,
@@ -897,21 +807,9 @@ class MultidimensionalAnalyzer:
                 if values:
                     recent_styles[feature] = sum(values[-10:]) / min(len(values), 10)
             
-            prompt = f"""
-基于用户的沟通风格数据，分析其人格特质。请返回JSON格式的五大人格特质评分(0-1)：
-
-沟通风格数据：
-{json.dumps(recent_styles, ensure_ascii=False, indent=2)}
-
-请返回以下格式的JSON：
-{{
-    "openness": 0.0-1.0,  // 开放性
-    "conscientiousness": 0.0-1.0,  // 尽责性  
-    "extraversion": 0.0-1.0,  // 外向性
-    "agreeableness": 0.0-1.0,  // 宜人性
-    "neuroticism": 0.0-1.0  // 神经质
-}}
-"""
+            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_PERSONALITY_TRAITS_PROMPT.format(
+                communication_style_data=json.dumps(recent_styles, ensure_ascii=False, indent=2)
+            )
             
             response = await self.refine_llm_client.chat_completion(
                 prompt=prompt,

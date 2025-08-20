@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自学习插件管理后台 - 登录</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <div class="login-container" id="login-container">
+        <div class="login-card">
+            <h2>自学习插件管理后台</h2>
+            <div class="form-group">
+                <label for="password">密码:</label>
+                <input type="password" id="password" placeholder="请输入密码">
+            </div>
+            <button class="btn btn-primary" id="login-button">登录</button>
+            <p id="login-message" class="error-message"></p>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            const loginContainer = document.getElementById('login-container');
+            const loginButton = document.getElementById('login-button');
+            const passwordInput = document.getElementById('password');
+            const loginMessage = document.getElementById('login-message');
+
+            // 检查是否需要强制更改密码
+            const response = await fetch('/api/'); // 访问根API，服务器会根据密码状态重定向
+            if (response.redirected && response.url.includes('change_password')) {
+                window.location.href = response.url; // 如果服务器重定向到修改密码页面，则客户端也重定向
+                return;
+            }
+
+            // 尝试自动登录（如果之前已登录且密码已更改）
+            const storedPassword = localStorage.getItem('plugin_password');
+            if (storedPassword) {
+                try {
+                    const loginResponse = await fetch('/api/login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ password: storedPassword })
+                    });
+                    const loginData = await loginResponse.json();
+                    if (loginResponse.ok && !loginData.must_change) {
+                        window.location.href = '/'; // 自动登录成功，跳转到主页
+                        return;
+                    }
+                } catch (error) {
+                    console.error('Auto-login failed:', error);
+                }
+            }
+
+            // 如果未自动登录成功，则显示登录页面
+            loginContainer.classList.remove('hidden');
+
+            loginButton.addEventListener('click', async () => {
+                const password = passwordInput.value;
+                try {
+                    const response = await fetch('/api/login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ password: password })
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        if (data.must_change) {
+                            loginMessage.textContent = '登录成功，请更改默认密码。';
+                            loginMessage.classList.remove('error-message');
+                            loginMessage.classList.add('success-message');
+                            setTimeout(() => {
+                                window.location.href = '/api/change_password';
+                            }, 1500);
+                        } else {
+                            localStorage.setItem('plugin_password', password); // 保存密码
+                            loginMessage.textContent = '登录成功！';
+                            loginMessage.classList.remove('error-message');
+                            loginMessage.classList.add('success-message');
+                            window.location.href = '/'; // 登录成功，跳转到主页
+                        }
+                    } else {
+                        loginMessage.textContent = data.error || '登录失败。';
+                        loginMessage.classList.add('error-message');
+                        loginMessage.classList.remove('success-message');
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    loginMessage.textContent = '请求失败，请稍后再试。';
+                    loginMessage.classList.add('error-message');
+                    loginMessage.classList.remove('success-message');
+                }
+            });
+        });
+    </script>
+</body>
+</html>

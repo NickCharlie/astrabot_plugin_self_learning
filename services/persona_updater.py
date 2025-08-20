@@ -2,13 +2,15 @@
 人格更新服务 - 基于AstrBot框架的人格管理
 """
 import logging
+import time # 导入 time 模块
 from typing import Dict, List, Any, Optional
 
 from astrbot.api.star import Context
 from astrbot.core.provider.provider import Personality
 from ..config import PluginConfig
-from ..core.interfaces import IPersonaUpdater, IPersonaBackupManager, MessageData, AnalysisResult # 导入 IPersonaUpdater, IPersonaBackupManager, MessageData, AnalysisResult
+from ..core.interfaces import IPersonaUpdater, IPersonaBackupManager, MessageData, AnalysisResult, PersonaUpdateRecord # 导入 PersonaUpdateRecord
 from ..core.llm_client import LLMClient # 导入 LLMClient
+from .database_manager import DatabaseManager # 导入 DatabaseManager
 
 
 class PersonaUpdater(IPersonaUpdater):
@@ -17,14 +19,15 @@ class PersonaUpdater(IPersonaUpdater):
     直接操作框架的 curr_personality 属性
     """
     
-    def __init__(self, config: PluginConfig, context: Context, backup_manager: IPersonaBackupManager, llm_client: LLMClient):
+    def __init__(self, config: PluginConfig, context: Context, backup_manager: IPersonaBackupManager, llm_client: LLMClient, db_manager: DatabaseManager):
         self.config = config
         self.context = context
         self.backup_manager = backup_manager
-        self.llm_client = llm_client # 添加 llm_client
+        self.llm_client = llm_client
+        self.db_manager = db_manager # 添加 db_manager
         self._logger = logging.getLogger(self.__class__.__name__)
         
-    async def update_persona_with_style(self, style_analysis: Dict[str, Any], filtered_messages: List[MessageData]) -> bool:
+    async def update_persona_with_style(self, group_id: str, style_analysis: Dict[str, Any], filtered_messages: List[MessageData]) -> bool:
         """根据风格分析和筛选过的消息更新人格"""
         try:
             # 获取当前提供商
@@ -34,19 +37,32 @@ class PersonaUpdater(IPersonaUpdater):
                 return False
             
             # 检查是否有当前人格
+            # 这里需要考虑如何根据 group_id 获取特定会话的人格
+            # 暂时仍然使用 curr_personality，但如果 astrbot 核心支持会话人格，这里需要修改
             if not hasattr(provider, 'curr_personality') or not provider.curr_personality:
                 self._logger.error("当前提供商没有设置人格")
                 return False
             
             current_persona = provider.curr_personality
-            self._logger.info(f"当前人格: {current_persona.get('name', 'unknown')}")
+            self._logger.info(f"当前人格: {current_persona.get('name', 'unknown')} for group {group_id}")
             
             # 更新人格prompt
             if 'enhanced_prompt' in style_analysis:
                 original_prompt = current_persona.get('prompt', '')
                 enhanced_prompt = self._merge_prompts(original_prompt, style_analysis['enhanced_prompt'])
+                
+                # 记录人格更新以便人工审查
+                await self.record_persona_update_for_review(PersonaUpdateRecord(
+                    timestamp=time.time(),
+                    group_id=group_id,
+                    update_type="prompt_update",
+                    original_content=original_prompt,
+                    new_content=enhanced_prompt,
+                    reason="风格分析建议更新prompt"
+                ))
+                
                 current_persona['prompt'] = enhanced_prompt
-                self._logger.info(f"人格prompt已更新，长度: {len(enhanced_prompt)}")
+                self._logger.info(f"人格prompt已更新，长度: {len(enhanced_prompt)} for group {group_id}")
             
             # 更新对话风格模仿
             if filtered_messages: # 直接使用传入的 filtered_messages
@@ -56,34 +72,69 @@ class PersonaUpdater(IPersonaUpdater):
             if 'style_attributes' in style_analysis: # 从 style_analysis 中获取 style_attributes
                 await self._apply_style_attributes(current_persona, style_analysis['style_attributes'])
             
-            self._logger.info("人格更新成功")
+            self._logger.info(f"人格更新成功 for group {group_id}")
             return True
             
         except Exception as e:
-            self._logger.error(f"人格更新失败: {e}")
-            raise SelfLearningError(f"人格更新失败: {str(e)}") from e
+            self._logger.error(f"人格更新失败 for group {group_id}: {e}")
+            raise SelfLearningError(f"人格更新失败: {str(e)}")
     
-    async def get_current_persona_description(self) -> Optional[str]:
+    async def record_persona_update_for_review(self, record: PersonaUpdateRecord) -> int:
+        """记录需要人工审查的人格更新"""
+        try:
+            record_dict = record.__dict__
+            # 移除 id 字段，因为它是自增的
+            record_dict.pop('id', None) 
+            record_id = await self.db_manager.save_persona_update_record(record_dict)
+            self._logger.info(f"已记录人格更新待审查，ID: {record_id}")
+            return record_id
+        except Exception as e:
+            self._logger.error(f"记录人格更新待审查失败: {e}")
+            raise PersonaUpdateError(f"记录人格更新待审查失败: {str(e)}")
+
+    async def get_pending_persona_updates(self) -> List[PersonaUpdateRecord]:
+        """获取所有待审查的人格更新"""
+        try:
+            records_data = await self.db_manager.get_pending_persona_update_records()
+            return [PersonaUpdateRecord(**data) for data in records_data]
+        except Exception as e:
+            self._logger.error(f"获取待审查人格更新失败: {e}")
+            return []
+
+    async def review_persona_update(self, update_id: int, status: str, reviewer_comment: Optional[str] = None) -> bool:
+        """审查人格更新"""
+        try:
+            result = await self.db_manager.update_persona_update_record_status(update_id, status, reviewer_comment)
+            if result:
+                self._logger.info(f"人格更新 {update_id} 已审查为 {status}")
+            return result
+        except Exception as e:
+            self._logger.error(f"审查人格更新失败: {e}")
+            raise PersonaUpdateError(f"审查人格更新失败: {str(e)}")
+
+    async def get_current_persona_description(self, group_id: str) -> Optional[str]:
         """获取当前人格的描述"""
         try:
+            # 这里需要考虑如何根据 group_id 获取特定会话的人格
             provider = self.context.get_using_provider()
             if provider and provider.curr_personality:
                 return provider.curr_personality.get('prompt', '')
             return None
         except Exception as e:
-            self._logger.error(f"获取当前人格描述失败: {e}")
+            self._logger.error(f"获取当前人格描述失败 for group {group_id}: {e}")
             return None
 
-    async def get_current_persona(self) -> Optional[Dict[str, Any]]:
+    async def get_current_persona(self, group_id: str) -> Optional[Dict[str, Any]]:
         """获取当前人格信息"""
         try:
+            # 这里需要考虑如何根据 group_id 获取特定会话的人格
             provider = self.context.get_using_provider()
             if provider and provider.curr_personality:
                 return dict(provider.curr_personality)
             return None
             
         except Exception as e:
-            self._logger.error(f"获取当前人格失败: {e}")
+            self._logger.error(f"获取当前人格失败 for group {group_id}: {e}")
             return None
     
     def _merge_prompts(self, original: str, enhancement: str) -> str:

@@ -1,4 +1,6 @@
-# AstrBot 自学习插件完整依赖列表
+quart
+quart-cors
+uvicorn
 
 # 核心异步支持
 asyncio
@@ -25,6 +27,8 @@ textstat
 wordcloud
 nltk
 spacy
+Depends
+python-jose
 
 # 深度学习（可选）
 torch

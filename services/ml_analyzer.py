@@ -32,11 +32,13 @@ class LightweightMLAnalyzer:
     """轻量级机器学习分析器 - 使用简单的ML算法进行数据分析"""
     
     def __init__(self, config: PluginConfig, db_manager: DatabaseManager, 
-                 refine_llm_client: Optional[LLMClient], reinforce_llm_client: Optional[LLMClient]):
+                 refine_llm_client: Optional[LLMClient], reinforce_llm_client: Optional[LLMClient],
+                 prompts: Any): # 添加 prompts 参数
         self.config = config
         self.db_manager = db_manager
         self.refine_llm_client = refine_llm_client
         self.reinforce_llm_client = reinforce_llm_client
+        self.prompts = prompts # 保存 prompts
         
         # 设置分析限制以节省资源
         self.max_sample_size = 100  # 最大样本数量
@@ -88,33 +90,12 @@ class LightweightMLAnalyzer:
             # 示例：让LLM总结这些消息的特点，并与当前人格进行对比
             messages_text = "\n".join([msg['message'] for msg in sorted_messages])
             
-            system_prompt = f"""
-你是一个人格提炼专家。你的任务是分析以下消息记录，并结合当前人格描述，提炼出新的、更丰富的人格特征和对话风格。
-重点关注消息中体现的：
-- 语言习惯、用词偏好
-- 情感表达方式
-- 互动模式
-- 知识领域和兴趣点
-- 与当前人格的契合点和差异点
-
-当前人格描述：
-{current_persona['description']}
-
-请以结构化的JSON格式返回提炼结果，例如：
-{{
-    "new_style_features": {{
-        "formal_level": 0.X,
-        "enthusiasm_level": 0.Y,
-        "question_tendency": 0.Z
-    }},
-    "new_topic_preferences": {{
-        "话题A": 0.A,
-        "话题B": 0.B
-    }},
-    "personality_insights": "一段关于人格演变的总结"
-}}
-"""
-            prompt = f"请分析以下消息记录，并结合当前人格，提炼出新的风格和特征：\n\n{messages_text}"
+            system_prompt = self.prompts.ML_ANALYZER_REPLAY_MEMORY_SYSTEM_PROMPT.format(
+                current_persona_description=current_persona['description']
+            )
+            prompt = self.prompts.ML_ANALYZER_REPLAY_MEMORY_PROMPT.format(
+                messages_text=messages_text
+            )
 
             response = await self.refine_llm_client.chat_completion(
                 prompt=prompt,
@@ -453,21 +434,9 @@ class LightweightMLAnalyzer:
 
         messages_text = "\n".join([msg['message'] for msg in messages])
         
-        prompt = f"""
-请分析以下消息集合的整体情感倾向，并以JSON格式返回积极、消极、中性、疑问、惊讶五种情感的平均置信度分数（0-1之间）。
-
-消息集合：
-{messages_text}
-
-请只返回一个JSON对象，例如：
-{{
-    "积极": 0.8,
-    "消极": 0.1,
-    "中性": 0.1,
-    "疑问": 0.0,
-    "惊讶": 0.0
-}}
-"""
+        prompt = self.prompts.ML_ANALYZER_SENTIMENT_ANALYSIS_PROMPT.format(
+            messages_text=messages_text
+        )
         try:
             response = await self.refine_llm_client.chat_completion(prompt=prompt)
             if response and response.text():

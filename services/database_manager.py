@@ -58,15 +58,25 @@ class DatabaseManager(AsyncServiceBase):
             # 确保目录存在
             os.makedirs(os.path.dirname(self.messages_db_path), exist_ok=True)
             self.messages_db_connection = await aiosqlite.connect(self.messages_db_path)
+            # 首次连接时，确保数据库表被初始化
+            await self._init_messages_database_tables(self.messages_db_connection)
         return self.messages_db_connection
 
     async def _init_messages_database(self):
-        """初始化全局消息SQLite数据库"""
-        conn = await self._get_messages_db_connection()
+        """
+        此方法现在仅作为 _do_start 的入口，实际的表创建逻辑已移至 _init_messages_database_tables。
+        """
+        # 确保连接已建立并表已初始化
+        await self._get_messages_db_connection()
+        self._logger.info("全局消息数据库连接已建立并表已初始化。")
+
+    async def _init_messages_database_tables(self, conn: aiosqlite.Connection):
+        """初始化全局消息SQLite数据库的表结构"""
         cursor = await conn.cursor()
         
         try:
             # 创建原始消息表
+            self._logger.info("尝试创建 raw_messages 表...")
             await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS raw_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,8 +90,11 @@ class DatabaseManager(AsyncServiceBase):
                     processed BOOLEAN DEFAULT FALSE
                 )
             ''')
+            self._logger.info("raw_messages 表创建/检查完成。")
+            await conn.commit() # 强制提交，确保表结构写入磁盘
             
             # 创建筛选后消息表
+            self._logger.info("尝试创建 filtered_messages 表...")
             await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS filtered_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,6 +110,7 @@ class DatabaseManager(AsyncServiceBase):
                     FOREIGN KEY (raw_message_id) REFERENCES raw_messages (id)
                 )
             ''')
+            self._logger.info("filtered_messages 表创建/检查完成。")
             
             # 检查并添加 quality_scores 列（如果不存在）
             await cursor.execute("PRAGMA table_info(filtered_messages)")
@@ -119,6 +133,22 @@ class DatabaseManager(AsyncServiceBase):
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            # 创建人格更新记录表
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS persona_update_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    group_id TEXT NOT NULL,
+                    update_type TEXT NOT NULL,
+                    original_content TEXT,
+                    new_content TEXT NOT NULL,
+                    reason TEXT,
+                    status TEXT DEFAULT 'pending',
+                    reviewer_comment TEXT,
+                    review_time REAL
+                )
+            ''')
             
             # 创建索引
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_messages_timestamp ON raw_messages(timestamp)')
@@ -126,12 +156,21 @@ class DatabaseManager(AsyncServiceBase):
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_messages_processed ON raw_messages(processed)')
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_filtered_messages_confidence ON filtered_messages(confidence)')
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_filtered_messages_used ON filtered_messages(used_for_learning)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_persona_update_records_status ON persona_update_records(status)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_persona_update_records_group_id ON persona_update_records(group_id)')
             
             await conn.commit()
             logger.info("全局消息数据库初始化完成")
             
         except aiosqlite.Error as e:
             logger.error(f"全局消息数据库初始化失败: {e}", exc_info=True)
+            # 尝试删除可能损坏的数据库文件，以便下次启动时重新创建
+            if os.path.exists(self.messages_db_path):
+                self._logger.warning(f"数据库初始化失败，尝试删除损坏的数据库文件: {self.messages_db_path}")
+                try:
+                    os.remove(self.messages_db_path)
+                except OSError as ose:
+                    self._logger.error(f"删除数据库文件失败: {ose}")
             raise DataStorageError(f"全局消息数据库初始化失败: {str(e)}")
 
     def get_group_db_path(self, group_id: str) -> str:
@@ -556,3 +595,85 @@ class DatabaseManager(AsyncServiceBase):
         except aiosqlite.Error as e:
             logger.error(f"恢复人格数据失败: {e}", exc_info=True)
             return None
+
+    async def save_persona_update_record(self, record: Dict[str, Any]) -> int:
+        """保存人格更新记录到数据库"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                INSERT INTO persona_update_records (timestamp, group_id, update_type, original_content, new_content, reason, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                record.get('timestamp', time.time()),
+                record.get('group_id'),
+                record.get('update_type'),
+                record.get('original_content'),
+                record.get('new_content'),
+                record.get('reason'),
+                record.get('status', 'pending')
+            ))
+            
+            record_id = cursor.lastrowid
+            await conn.commit()
+            logger.debug(f"人格更新记录已保存，ID: {record_id}")
+            return record_id
+            
+        except aiosqlite.Error as e:
+            logger.error(f"保存人格更新记录失败: {e}", exc_info=True)
+            raise DataStorageError(f"保存人格更新记录失败: {str(e)}")
+
+    async def get_pending_persona_update_records(self) -> List[Dict[str, Any]]:
+        """获取所有待审查的人格更新记录"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT id, timestamp, group_id, update_type, original_content, new_content, reason, status, reviewer_comment, review_time
+                FROM persona_update_records
+                WHERE status = 'pending'
+                ORDER BY timestamp DESC
+            ''')
+            
+            records = []
+            for row in await cursor.fetchall():
+                records.append({
+                    'id': row[0],
+                    'timestamp': row[1],
+                    'group_id': row[2],
+                    'update_type': row[3],
+                    'original_content': row[4],
+                    'new_content': row[5],
+                    'reason': row[6],
+                    'status': row[7],
+                    'reviewer_comment': row[8],
+                    'review_time': row[9]
+                })
+            return records
+            
+        except aiosqlite.Error as e:
+            logger.error(f"获取待审查人格更新记录失败: {e}", exc_info=True)
+            return []
+
+    async def update_persona_update_record_status(self, record_id: int, status: str, reviewer_comment: Optional[str] = None) -> bool:
+        """更新人格更新记录的状态"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            review_time = time.time()
+            await cursor.execute('''
+                UPDATE persona_update_records
+                SET status = ?, reviewer_comment = ?, review_time = ?
+                WHERE id = ?
+            ''', (status, reviewer_comment, review_time, record_id))
+            
+            await conn.commit()
+            logger.debug(f"人格更新记录 {record_id} 状态已更新为 {status}")
+            return cursor.rowcount > 0
+            
+        except aiosqlite.Error as e:
+            logger.error(f"更新人格更新记录状态失败: {e}", exc_info=True)
+            raise DataStorageError(f"更新人格更新记录状态失败: {str(e)}")

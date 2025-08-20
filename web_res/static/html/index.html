@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自学习插件管理后台</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <div class="main-content" id="main-app-content">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>自学习插件</h2>
+            </div>
+            <ul class="sidebar-menu">
+                <li class="menu-item active" data-page="dashboard">
+                    <i class="material-icons">dashboard</i>
+                    <span>仪表盘</span>
+                </li>
+                <li class="menu-item" data-page="config">
+                    <i class="material-icons">settings</i>
+                    <span>插件配置</span>
+                </li>
+                <li class="menu-item" data-page="persona-review">
+                    <i class="material-icons">rate_review</i>
+                    <span>人格审查</span>
+                </li>
+                <li class="menu-item" data-page="metrics">
+                    <i class="material-icons">analytics</i>
+                    <span>性能监控</span>
+                </li>
+            </ul>
+        </div>
+        <div class="main-content-area">
+            <header class="topbar">
+                <h1 id="page-title">仪表盘</h1>
+            </header>
+            <div class="content-area">
+                <!-- 页面内容将在这里加载 -->
+                <div id="dashboard-page" class="page active">
+                    <h2>欢迎来到自学习插件管理后台</h2>
+                    <p>请从左侧菜单选择功能。</p>
+                    <!-- 仪表盘内容 -->
+                </div>
+                <div id="config-page" class="page">
+                    <h2>插件配置</h2>
+                    <div class="card">
+                        <h3>基础设置</h3>
+                        <div class="form-group">
+                            <label for="enableMessageCapture">消息抓取</label>
+                            <input type="checkbox" id="enableMessageCapture">
+                        </div>
+                        <div class="form-group">
+                            <label for="enableAutoLearning">自主学习</label>
+                            <input type="checkbox" id="enableAutoLearning">
+                        </div>
+                        <div class="form-group">
+                            <label for="enableRealtimeLearning">实时学习</label>
+                            <input type="checkbox" id="enableRealtimeLearning">
+                        </div>
+                        <div class="form-group">
+                            <label for="enableWebInterface">Web界面</label>
+                            <input type="checkbox" id="enableWebInterface">
+                        </div>
+                        <button class="btn btn-primary" id="saveConfig">保存配置</button>
+                    </div>
+                </div>
+                <div id="persona-review-page" class="page">
+                    <h2>人格审查</h2>
+                    <div class="card">
+                        <h3>待审查的人格更新</h3>
+                        <ul id="persona-updates-list">
+                            <!-- 人格更新列表将在这里加载 -->
+                        </ul>
+                    </div>
+                </div>
+                <div id="metrics-page" class="page">
+                    <h2>性能监控</h2>
+                    <div class="card">
+                        <h3>LLM 调用统计</h3>
+                        <div id="llm-calls-metrics">
+                            <!-- LLM 调用统计将在这里加载 -->
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>API 响应时间</h3>
+                        <div id="api-response-times-metrics">
+                            <!-- API 响应时间将在这里加载 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/js/script.js"></script>
+</body>
+</html>

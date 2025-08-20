@@ -29,15 +29,15 @@ class IntelligentResponder:
     GROUP_ATMOSPHERE_PERIOD_SECONDS = 3600  # 1小时
     GROUP_ACTIVITY_HIGH_THRESHOLD = 10
     
-    def __init__(self, config: PluginConfig, context: Context, db_manager, llm_client):
+    def __init__(self, config: PluginConfig, context: Context, db_manager, llm_client, prompts: Any):
         self.config = config
         self.context = context
         self.db_manager = db_manager
-        self.llm_client = llm_client # 添加 llm_client
+        self.llm_client = llm_client
+        self.prompts = prompts # 添加 prompts
         
         # 回复策略配置
         self.enable_intelligent_reply = config.enable_intelligent_reply
-        self.reply_probability = config.reply_probability
         self.context_window_size = config.context_window_size
         
         logger.info("智能回复器初始化完成")
@@ -48,42 +48,30 @@ class IntelligentResponder:
             return False
         
         try:
-            sender_id = event.get_sender_id()
-            group_id = event.get_group_id()
+            # 获取消息类型 (私聊或群聊)
+            is_private_chat = event.is_private_chat()
+            is_group_chat = event.is_group_chat()
             message_text = event.get_message_str()
             
-            # 检查回复概率
-            if random.random() > self.reply_probability:
-                return False
-            
-            # 检查是否提到了BOT或有关键词
-            if await self._is_relevant_message(message_text, group_id):
+            if is_private_chat:
+                # 私聊消息一定回复
+                logger.debug(f"私聊消息，将回复: {message_text[:50]}")
                 return True
+            elif is_group_chat:
+                # 群聊消息只有被 @ 时才回复
+                if event.is_at_me():
+                    logger.debug(f"群聊消息被@，将回复: {message_text[:50]}")
+                    return True
+                else:
+                    logger.debug(f"群聊消息未被@，不回复: {message_text[:50]}")
+                    return False
             
-            # 检查社交关系强度
-            social_strength = await self._get_social_strength(group_id, sender_id)
-            if social_strength > self.SOCIAL_STRENGTH_THRESHOLD:  # 高社交强度用户更容易触发回复
-                return random.random() < self.REPLY_PROBABILITY_HIGH_SOCIAL
-            
-            return False
+            return False # 默认不回复
             
         except Exception as e:
             logger.error(f"判断是否回复失败: {e}")
             return False
 
-    async def _is_relevant_message(self, message: str, group_id: str) -> bool:
-        """检查消息是否与BOT相关"""
-        # 检查@消息
-        if '@' in message:
-            return True
-        
-        # 检查关键词
-        message_lower = message.lower()
-        for keyword in self.config.intelligent_reply_keywords:
-            if keyword.lower() in message_lower:
-                return True
-        
-        return False
 
     async def _get_social_strength(self, group_id: str, user_id: str) -> float:
         """获取用户的社交强度"""
@@ -184,7 +172,7 @@ class IntelligentResponder:
         prompt_parts = []
         
         # 基础人格设定
-        current_persona = self.config.current_persona or "你是一个友好、智能的AI助手"
+        current_persona = self.config.current_persona or self.prompts.INTELLIGENT_RESPONDER_DEFAULT_PERSONA_PROMPT
         prompt_parts.append(f"人格设定: {current_persona}")
         
         # 用户画像信息
@@ -291,7 +279,6 @@ class IntelligentResponder:
             
             return {
                 'daily_responses': daily_responses,
-                'response_rate': self.reply_probability,
                 'intelligent_reply_enabled': self.enable_intelligent_reply
             }
             

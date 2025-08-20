@@ -19,7 +19,9 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .config import PluginConfig
 from .core.factory import FactoryManager
 from .exceptions import SelfLearningError
+from .webui import Server, set_plugin_services # 导入 FastAPI 服务器相关
 
+server_instance: Optional[Server] = None # 全局服务器实例
 
 @dataclass
 class LearningStats:
@@ -60,6 +62,17 @@ class SelfLearningPlugin(star.Star):
         
         # 初始化服务层
         self._initialize_services()
+
+        # 初始化 Web 服务器
+        global server_instance
+        if self.plugin_config.enable_web_interface:
+            server_instance = Server(port=self.plugin_config.web_interface_port)
+            if server_instance:
+                logger.info(f"Web 界面已启用，将在 http://{server_instance.host}:{server_instance.port} 启动")
+            else:
+                logger.error("Web 界面初始化失败")
+        else:
+            logger.info("Web 界面未启用")
         
         logger.info("自学习插件初始化完成")
 
@@ -86,6 +99,14 @@ class SelfLearningPlugin(star.Star):
             
             # 初始化内部组件
             self._setup_internal_components()
+
+            # 将服务实例传递给 Web 服务器模块
+            if self.plugin_config.enable_web_interface and server_instance:
+                set_plugin_services(
+                    self.plugin_config,
+                    self.factory_manager, # 传递 factory_manager
+                    self.service_factory.create_llm_client() # 传递 LLMClient 实例
+                )
             
             logger.info("自学习插件工厂模式服务层初始化完成")
             
@@ -108,8 +129,7 @@ class SelfLearningPlugin(star.Star):
         self.qq_filter = self.component_factory.create_qq_filter()
         
         # 消息过滤器
-        llm_client_instance = self.service_factory.create_llm_client() # 通过 ServiceFactory 获取 LLMClient 实例
-        self.message_filter = self.component_factory.create_message_filter(self.context, llm_client_instance)
+        self.message_filter = self.component_factory.create_message_filter(self.context)
         
         # 人格更新器
         # PersonaUpdater 的创建现在需要 backup_manager，它是一个服务，也应该通过 ServiceFactory 获取
@@ -123,32 +143,50 @@ class SelfLearningPlugin(star.Star):
         self.background_tasks = set()
         
         # 启动异步任务并追踪
-        task = asyncio.create_task(self._delayed_start_learning())
-        self.background_tasks.add(task)
-        task.add_done_callback(self.background_tasks.discard) # 任务完成后从集合中移除
+        # 延迟启动学习服务，并传递 group_id
+        # 注意：这里需要一个 group_id 来启动学习，对于插件初始化，可以考虑一个默认的全局 group_id
+        # 或者在实际消息处理时才启动针对特定 group_id 的学习
+        # 暂时不在这里启动全局学习，而是通过命令或消息触发
+        # task = asyncio.create_task(self._delayed_start_learning())
+        # self.background_tasks.add(task)
+        # task.add_done_callback(self.background_tasks.discard) # 任务完成后从集合中移除
     
-    async def _delayed_start_learning(self):
+    async def on_load(self):
+        """插件加载时启动 Web 服务器和数据库管理器"""
+        global server_instance
+        if self.plugin_config.enable_web_interface and server_instance:
+            await server_instance.start()
+        
+        # 启动数据库管理器，确保数据库表被创建
+        await self.db_manager.start()
+        
+        logger.info("自学习插件加载完成")
+
+    async def _delayed_start_learning(self, group_id: str):
         """延迟启动学习服务"""
         try:
             await asyncio.sleep(3)  # 等待初始化完成
             await self.service_factory.initialize_all_services() # 确保所有服务初始化完成
-            self.learning_scheduler.start()
-            logger.info("自动学习调度器已启动")
+            # 启动针对特定 group_id 的渐进式学习
+            await self.progressive_learning.start_learning(group_id)
+            logger.info(f"自动学习调度器已启动 for group {group_id}")
         except Exception as e:
-            logger.error(f"启动学习服务失败: {e}")
+            logger.error(f"启动学习服务失败 for group {group_id}: {e}")
 
     @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(plugin_instance, event: AstrMessageEvent): # Removed context=None
+    async def on_message(self, event: AstrMessageEvent):
         """监听所有消息，收集用户对话数据"""
         
         # 检查是否启用消息抓取
-        if not plugin_instance.plugin_config.enable_message_capture:
+        if not self.plugin_config.enable_message_capture:
             return
             
         try:
-            # QQ号过滤
+            group_id = event.get_group_id() or event.get_sender_id() # 使用群组ID或发送者ID作为会话ID
             sender_id = event.get_sender_id()
-            if not plugin_instance.qq_filter.should_collect_message(sender_id):
+            
+            # QQ号过滤
+            if not self.qq_filter.should_collect_message(sender_id):
                 return
                 
             # 获取消息文本
@@ -157,228 +195,150 @@ class SelfLearningPlugin(star.Star):
                 return
                 
             # 收集消息
-            await plugin_instance.message_collector.collect_message({
+            await self.message_collector.collect_message({
                 'sender_id': sender_id,
                 'sender_name': event.get_sender_name(),
                 'message': message_text,
-                'group_id': event.get_group_id(),
+                'group_id': group_id, # 使用 group_id
                 'timestamp': time.time(),
                 'platform': event.get_platform_name()
             })
             
-            plugin_instance.learning_stats.total_messages_collected += 1
+            self.learning_stats.total_messages_collected += 1
             
             # 如果启用实时学习，立即进行筛选
-            if plugin_instance.plugin_config.enable_realtime_learning:
-                await plugin_instance._process_message_realtime(message_text, sender_id)
+            if self.plugin_config.enable_realtime_learning:
+                await self._process_message_realtime(group_id, message_text, sender_id) # 传递 group_id
                 
-        except Exception as e: # Consider more specific exceptions if possible
+        except Exception as e:
             logger.error(f"消息收集过程中发生未知错误: {e}", exc_info=True)
 
-    async def _process_message_realtime(plugin_instance, message_text: str, sender_id: str):
+    async def _process_message_realtime(self, group_id: str, message_text: str, sender_id: str):
         """实时处理消息"""
         try:
             # 使用弱模型筛选消息
-            if await plugin_instance.message_filter.is_suitable_for_learning(message_text):
-                await plugin_instance.message_collector.add_filtered_message({
+            # 获取当前会话的人格描述
+            current_persona_description = await self.persona_manager.get_current_persona_description()
+            
+            if await self.multidimensional_analyzer.filter_message_with_llm(message_text, current_persona_description):
+                await self.message_collector.add_filtered_message({
                     'message': message_text,
                     'sender_id': sender_id,
+                    'group_id': group_id, # 添加 group_id
                     'timestamp': time.time(),
                     'confidence': 0.8  # 实时筛选置信度
                 })
-                plugin_instance.learning_stats.filtered_messages += 1
+                self.learning_stats.filtered_messages += 1
                 
-        except Exception as e: # Consider more specific exceptions if possible
+        except Exception as e:
             logger.error(f"实时消息处理过程中发生未知错误: {e}", exc_info=True)
 
-    async def _perform_learning_cycle(plugin_instance):
-        """执行完整的学习周期"""
-        try:
-            logger.info("开始执行自学习周期...")
-            
-            # 1. 获取待处理的消息
-            raw_messages = await plugin_instance.message_collector.get_unprocessed_messages()
-            if not raw_messages:
-                logger.info("没有待处理的消息")
-                return
-                
-            logger.info(f"开始处理 {len(raw_messages)} 条消息")
-            
-            # 2. 使用弱模型筛选消息并进行多维度评分
-            processed_messages = []
-            current_persona_description = plugin_instance.persona_manager.get_current_persona_description() # 获取当前人格描述
-            
-            # 2. 使用弱模型筛选消息并进行多维度评分 (并发处理)
-            filter_tasks = []
-            for msg in raw_messages:
-                message_text = msg['message']
-                filter_tasks.append(
-                    plugin_instance.multidimensional_analyzer.filter_message_with_llm(
-                        message_text, current_persona_description
-                    )
-                )
-            
-            filter_results = await asyncio.gather(*filter_tasks)
-            
-            evaluation_tasks = []
-            filtered_raw_messages = []
-            for i, msg in enumerate(raw_messages):
-                if filter_results[i]:
-                    filtered_raw_messages.append(msg)
-                    evaluation_tasks.append(
-                        plugin_instance.multidimensional_analyzer.evaluate_message_quality_with_llm(
-                            msg['message'], current_persona_description
-                        )
-                    )
-            
-            if evaluation_tasks:
-                evaluation_results = await asyncio.gather(*evaluation_tasks)
-                
-                for i, msg in enumerate(filtered_raw_messages):
-                    msg['quality_scores'] = evaluation_results[i]
-                    processed_messages.append(msg)
-                    
-            logger.info(f"筛选并评分出 {len(processed_messages)} 条适合学习的消息")
-            plugin_instance.learning_stats.filtered_messages += len(processed_messages)
-            
-            if not processed_messages:
-                return
-                
-            # 3. 使用强模型分析对话风格 (使用已评分的消息)
-            style_analysis = await plugin_instance.style_analyzer.analyze_conversation_style(
-                processed_messages
-            )
-            
-            if not style_analysis:
-                logger.warning("风格分析失败")
-                return
-                
-            # 4. 更新人格和对话风格
-            original_persona = plugin_instance.persona_manager.get_current_persona() # 获取原始人格
-            update_success = await plugin_instance.persona_updater.update_persona_with_style(
-                style_analysis,
-                processed_messages # 传递包含评分的消息
-            )
-            
-            if update_success:
-                plugin_instance.learning_stats.style_updates += 1
-                plugin_instance.learning_stats.persona_updates += 1
-                plugin_instance.learning_stats.last_learning_time = datetime.now().isoformat()
-                plugin_instance.learning_stats.last_persona_update = datetime.now().isoformat()
-
-                # 执行记忆重放
-                await plugin_instance.ml_analyzer.replay_memory()
-
-                # 评估学习质量 (传递包含评分的消息)
-                updated_persona = plugin_instance.persona_manager.get_current_persona() # 获取更新后的人格
-                await plugin_instance.quality_monitor.evaluate_learning_batch(original_persona, updated_persona, processed_messages)
-                
-            # 5. 标记消息为已处理
-            await plugin_instance.message_collector.mark_messages_processed(
-                [msg['id'] for msg in raw_messages if 'id' in msg]
-            )
-            
-            logger.info("自学习周期完成")
-            
-        except Exception as e: # Consider more specific exceptions if possible
-            logger.error(f"学习周期执行过程中发生未知错误: {e}", exc_info=True)
-
     @filter.command("learning_status")
-    async def learning_status_command(plugin_instance, event: AstrMessageEvent):
+    async def learning_status_command(self, event: AstrMessageEvent):
         """查看学习状态"""
         try:
+            group_id = event.get_group_id() or event.get_sender_id() # 获取当前会话ID
+            
             # 获取收集统计
-            collector_stats = await plugin_instance.message_collector.get_statistics()
+            collector_stats = await self.message_collector.get_statistics(group_id) # 传入 group_id
             
             # 获取当前人格设置
-            current_persona = plugin_instance.context.get_using_provider().curr_personality.name if plugin_instance.context.get_using_provider() else "未知"
+            current_persona_info = await self.persona_manager.get_current_persona(group_id)
+            current_persona_name = current_persona_info.get('name', '未知') if current_persona_info else '未知'
             
-            status_info = f"""📚 自学习插件状态报告:
+            # 获取渐进式学习服务的状态
+            learning_status = await self.progressive_learning.get_learning_status()
+            
+            status_info = f"""📚 自学习插件状态报告 (会话ID: {group_id}):
 
 🔧 基础配置:
-- 消息抓取: {'✅ 启用' if plugin_instance.plugin_config.enable_message_capture else '❌ 禁用'}
-- 自主学习: {'✅ 启用' if plugin_instance.plugin_config.enable_auto_learning else '❌ 禁用'}
-- 实时学习: {'✅ 启用' if plugin_instance.plugin_config.enable_realtime_learning else '❌ 禁用'}
-- Web界面: {'✅ 启用' if plugin_instance.plugin_config.enable_web_interface else '❌ 禁用'}
+- 消息抓取: {'✅ 启用' if self.plugin_config.enable_message_capture else '❌ 禁用'}
+- 自主学习: {'✅ 启用' if self.plugin_config.enable_auto_learning else '❌ 禁用'}
+- 实时学习: {'✅ 启用' if self.plugin_config.enable_realtime_learning else '❌ 禁用'}
+- Web界面: {'✅ 启用' if self.plugin_config.enable_web_interface else '❌ 禁用'}
 
 👥 抓取设置:
-- 目标QQ: {plugin_instance.plugin_config.target_qq_list if plugin_instance.plugin_config.target_qq_list else '全部用户'}
-- 当前人格: {current_persona}
+- 目标QQ: {self.plugin_config.target_qq_list if self.plugin_config.target_qq_list else '全部用户'}
+- 当前人格: {current_persona_name}
 
 🤖 模型配置:
-- 筛选模型: {plugin_instance.plugin_config.filter_model_name}
-- 提炼模型: {plugin_instance.plugin_config.refine_model_name}
+- 筛选模型: {self.plugin_config.filter_model_name}
+- 提炼模型: {self.plugin_config.refine_model_name}
 
-📊 学习统计:
-- 总收集消息: {plugin_instance.learning_stats.total_messages_collected}
-- 筛选消息: {plugin_instance.learning_stats.filtered_messages}  
-- 风格更新次数: {plugin_instance.learning_stats.style_updates}
-- 人格更新次数: {plugin_instance.learning_stats.persona_updates}
-- 最后学习时间: {plugin_instance.learning_stats.last_learning_time or '从未执行'}
+📊 学习统计 (当前会话):
+- 总收集消息: {collector_stats.get('total_messages', 0)}
+- 筛选消息: {collector_stats.get('filtered_messages', 0)}  
+- 风格更新次数: {learning_status.get('current_session', {}).get('style_updates', 0)}
+- 最后学习时间: {learning_status.get('current_session', {}).get('end_time', '从未执行')}
 
-💾 存储统计:
+💾 存储统计 (当前会话):
 - 原始消息: {collector_stats.get('raw_messages', 0)} 条
 - 待处理消息: {collector_stats.get('unprocessed_messages', 0)} 条
 - 筛选过的消息: {collector_stats.get('filtered_messages', 0)} 条
 
-⏰ 调度状态: {'🟢 运行中' if plugin_instance.learning_scheduler.is_running else '🔴 已停止'}"""
+⏰ 调度状态 (当前会话): {'🟢 运行中' if learning_status.get('learning_active') else '🔴 已停止'}"""
 
             yield event.plain_result(status_info.strip())
             
-        except Exception as e: # Consider more specific exceptions if possible
+        except Exception as e:
             logger.error(f"获取学习状态失败: {e}", exc_info=True)
             yield event.plain_result(f"状态查询失败: {str(e)}")
 
     @filter.command("start_learning")
-    async def start_learning_command(plugin_instance, event: AstrMessageEvent):
+    async def start_learning_command(self, event: AstrMessageEvent):
         """手动启动学习"""
         try:
-            if plugin_instance.learning_scheduler.is_running:
-                yield event.plain_result("📚 自动学习已在运行中")
-                return
-                
-            plugin_instance.learning_scheduler.start()
-            yield event.plain_result("✅ 自动学习已启动")
+            group_id = event.get_group_id() or event.get_sender_id()
             
-        except Exception as e: # Consider more specific exceptions if possible
+            if await self.progressive_learning.start_learning(group_id):
+                yield event.plain_result(f"✅ 自动学习已启动 for group {group_id}")
+            else:
+                yield event.plain_result(f"📚 自动学习已在运行中 for group {group_id}")
+            
+        except Exception as e:
             logger.error(f"启动学习失败: {e}", exc_info=True)
             yield event.plain_result(f"启动失败: {str(e)}")
 
     @filter.command("stop_learning")
-    async def stop_learning_command(plugin_instance, event: AstrMessageEvent):
+    async def stop_learning_command(self, event: AstrMessageEvent):
         """停止学习"""
         try:
-            if not plugin_instance.learning_scheduler.is_running:
-                yield event.plain_result("📚 自动学习未运行")
-                return
-                
-            await plugin_instance.learning_scheduler.stop()
-            yield event.plain_result("⏹️ 自动学习已停止")
+            group_id = event.get_group_id() or event.get_sender_id()
             
-        except Exception as e: # Consider more specific exceptions if possible
+            # ProgressiveLearningService 的 stop_learning 目前没有 group_id 参数
+            # 如果需要停止特定 group_id 的学习，ProgressiveLearningService 需要修改
+            # 暂时调用全局停止，或者假设 stop_learning 会停止当前活跃的会话
+            await self.progressive_learning.stop_learning()
+            yield event.plain_result(f"⏹️ 自动学习已停止 for group {group_id}")
+            
+        except Exception as e:
             logger.error(f"停止学习失败: {e}", exc_info=True)
             yield event.plain_result(f"停止失败: {str(e)}")
 
     @filter.command("force_learning")  
-    async def force_learning_command(plugin_instance, event: AstrMessageEvent):
+    async def force_learning_command(self, event: AstrMessageEvent):
         """强制执行一次学习周期"""
         try:
-            yield event.plain_result("🔄 开始强制学习周期...")
-            await plugin_instance._perform_learning_cycle()
-            yield event.plain_result("✅ 强制学习周期完成")
+            group_id = event.get_group_id() or event.get_sender_id()
+            yield event.plain_result(f"🔄 开始强制学习周期 for group {group_id}...")
             
-        except Exception as e: # Consider more specific exceptions if possible
+            # 直接调用 ProgressiveLearningService 的批处理方法
+            await self.progressive_learning._execute_learning_batch(group_id)
+            
+            yield event.plain_result(f"✅ 强制学习周期完成 for group {group_id}")
+            
+        except Exception as e:
             logger.error(f"强制学习失败: {e}", exc_info=True)
             yield event.plain_result(f"强制学习失败: {str(e)}")
 
     @filter.command("clear_data")
-    async def clear_data_command(plugin_instance, event: AstrMessageEvent):
+    async def clear_data_command(self, event: AstrMessageEvent):
         """清空学习数据"""
         try:
-            await plugin_instance.message_collector.clear_all_data()
+            await self.message_collector.clear_all_data()
             
             # 重置统计
-            plugin_instance.learning_stats = LearningStats()
+            self.learning_stats = LearningStats()
             
             yield event.plain_result("🗑️ 所有学习数据已清空")
             
@@ -387,15 +347,15 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result(f"清空数据失败: {str(e)}")
 
     @filter.command("export_data")
-    async def export_data_command(plugin_instance, event: AstrMessageEvent):
+    async def export_data_command(self, event: AstrMessageEvent):
         """导出学习数据"""
         try:
-            export_data = await plugin_instance.message_collector.export_learning_data()
+            export_data = await self.message_collector.export_learning_data()
             
             # 生成导出文件
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"learning_data_export_{timestamp}.json"
-            filepath = os.path.join(plugin_instance.plugin_config.data_dir, filename)
+            filepath = os.path.join(self.plugin_config.data_dir, filename)
             
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(export_data, f, ensure_ascii=False, indent=2)
@@ -406,15 +366,15 @@ class SelfLearningPlugin(star.Star):
             logger.error(f"导出数据失败: {e}", exc_info=True)
             yield event.plain_result(f"导出数据失败: {str(e)}")
 
-    async def terminate(plugin_instance):
+    async def terminate(self):
         """插件卸载时的清理工作"""
         try:
             # 停止学习调度器
-            if hasattr(plugin_instance, 'learning_scheduler'):
-                await plugin_instance.learning_scheduler.stop()
+            if hasattr(self, 'learning_scheduler'):
+                await self.learning_scheduler.stop()
                 
             # 取消所有后台任务
-            for task in list(plugin_instance.background_tasks): # 使用 list() 避免在迭代时修改集合
+            for task in list(self.background_tasks): # 使用 list() 避免在迭代时修改集合
                 task.cancel()
                 try:
                     await task
@@ -424,9 +384,19 @@ class SelfLearningPlugin(star.Star):
                     logger.error(f"取消后台任务时发生错误: {e}", exc_info=True)
             
             # 保存最终状态
-            if hasattr(plugin_instance, 'message_collector'):
-                await plugin_instance.message_collector.save_state()
+            if hasattr(self, 'message_collector'):
+                await self.message_collector.save_state()
                 
+            # 停止 Web 服务器
+            global server_instance
+            if server_instance:
+                await server_instance.stop()
+                
+            # 保存配置到文件
+            with open(os.path.join(self.plugin_config.data_dir, 'config.json'), 'w', encoding='utf-8') as f:
+                json.dump(self.plugin_config.to_dict(), f, ensure_ascii=False, indent=2)
+            logger.info("插件配置已保存")
+            
             logger.info("自学习插件已安全卸载")
             
         except Exception as e: # Consider more specific exceptions if possible

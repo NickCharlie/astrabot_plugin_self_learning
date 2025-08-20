@@ -12,6 +12,7 @@ from astrbot.api.star import Context
 
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError, ModelAccessError
+from ..core.llm_client import LLMClient # 导入 LLMClient
 from .database_manager import DatabaseManager # 导入 DatabaseManager
 
 
@@ -40,10 +41,13 @@ class StyleEvolution:
 class StyleAnalyzerService:
     """风格分析服务"""
     
-    def __init__(self, config: PluginConfig, context: Context, database_manager: DatabaseManager):
+    def __init__(self, config: PluginConfig, context: Context, database_manager: DatabaseManager, 
+                 refine_llm_client: Optional[LLMClient], prompts: Any): # 添加 refine_llm_client 和 prompts
         self.config = config
         self.context = context
         self.db_manager = database_manager # 注入 DatabaseManager 实例
+        self.refine_llm_client = refine_llm_client # 保存 LLMClient 实例
+        self.prompts = prompts # 保存 prompts
         
         # 风格演化历史
         self.style_evolution_history: List[StyleEvolution] = []
@@ -72,20 +76,20 @@ class StyleAnalyzerService:
             if not messages:
                 return {"error": "没有消息数据"}
             
-            # 获取强模型提供商
-            provider = self._get_refine_model_provider()
-            if not provider:
-                return {"error": "强模型不可用"}
+            # 获取强模型LLM客户端
+            llm_client = self._get_refine_model_client()
+            if not llm_client:
+                return {"error": "提炼模型LLM客户端未初始化，无法进行风格分析。"}
             
             # 准备分析数据
             message_texts = [msg.get('message', '') for msg in messages]
             combined_text = '\n'.join(message_texts[:50])  # 限制长度避免token超限
             
             # 生成风格分析报告
-            style_analysis = await self._generate_style_analysis(combined_text, provider)
+            style_analysis = await self._generate_style_analysis(combined_text, llm_client)
             
             # 提取数值化特征
-            style_profile = await self._extract_style_profile(combined_text, provider)
+            style_profile = await self._extract_style_profile(combined_text, llm_client)
             
             # 检测风格变化
             style_evolution = None
@@ -109,86 +113,44 @@ class StyleAnalyzerService:
             logger.error(f"对话风格分析失败: {e}")
             raise StyleAnalysisError(f"风格分析失败: {str(e)}")
 
-    async def _generate_style_analysis(self, text: str, provider) -> Dict[str, Any]:
+    async def _generate_style_analysis(self, text: str, llm_client: LLMClient) -> Dict[str, Any]:
         """生成详细的风格分析报告"""
         try:
-            prompt = f"""
-请对以下对话文本进行详细的风格分析，以JSON格式返回结果：
-
-对话文本：
-{text}
-
-请从以下维度进行分析并返回JSON格式结果：
-{{
-    "语言特色": {{
-        "词汇使用": "分析词汇选择和使用特点",
-        "句式结构": "分析句子结构和复杂度",
-        "修辞手法": "识别使用的修辞技巧"
-    }},
-    "情感表达": {{
-        "情感倾向": "整体情感倾向(积极/消极/中性)",
-        "情感强度": "情感表达的强烈程度(0-1)",
-        "情感变化": "情感在对话中的变化模式"
-    }},
-    "交流风格": {{
-        "互动方式": "与他人交流的方式特点",
-        "话题偏好": "倾向于讨论的话题类型",
-        "回应模式": "对他人消息的回应特征"
-    }},
-    "个性化特征": {{
-        "独特表达": "特有的表达习惯和用词",
-        "思维模式": "体现的思维特点",
-        "沟通目标": "沟通时的主要目标"
-    }},
-    "适应建议": {{
-        "风格匹配度": "与目标人格的匹配程度(0-1)",
-        "改进方向": "建议的风格调整方向",
-        "学习价值": "作为学习材料的价值评估(0-1)"
-    }}
-}}
-"""
+            prompt = self.prompts.STYLE_ANALYZER_GENERATE_STYLE_ANALYSIS_PROMPT.format(
+                text=text
+            )
             
-            response = await provider.text_chat(prompt)
+            response = await llm_client.chat_completion(prompt=prompt)
             
-            try:
-                analysis = json.loads(response.strip())
-                return analysis
-            except json.JSONDecodeError:
-                return {"error": "JSON解析失败", "raw_response": response}
+            if response and response.text():
+                try:
+                    analysis = json.loads(response.text().strip())
+                    return analysis
+                except json.JSONDecodeError:
+                    return {"error": "JSON解析失败", "raw_response": response.text()}
+            return {"error": "LLM响应为空"}
                 
         except Exception as e:
             logger.error(f"风格分析生成失败: {e}")
             return {"error": str(e)}
 
-    async def _extract_style_profile(self, text: str, provider) -> StyleProfile:
+    async def _extract_style_profile(self, text: str, llm_client: LLMClient) -> StyleProfile:
         """提取数值化的风格档案"""
         try:
-            prompt = f"""
-请对以下对话文本进行数值化的风格特征提取，返回JSON格式的评分(0-1)：
-
-对话文本：
-{text}
-
-请返回以下格式的JSON，每个维度给出0-1的评分：
-{{
-    "vocabulary_richness": 0.0,  // 词汇丰富度
-    "sentence_complexity": 0.0,  // 句式复杂度
-    "emotional_expression": 0.0,  // 情感表达度
-    "interaction_tendency": 0.0,  // 互动倾向
-    "topic_diversity": 0.0,       // 话题多样性
-    "formality_level": 0.0,       // 正式程度
-    "creativity_score": 0.0       // 创造性得分
-}}
-"""
+            prompt = self.prompts.STYLE_ANALYZER_EXTRACT_STYLE_PROFILE_PROMPT.format(
+                text=text
+            )
             
-            response = await provider.text_chat(prompt)
+            response = await llm_client.chat_completion(prompt=prompt)
             
-            try:
-                scores = json.loads(response.strip())
-                return StyleProfile(**scores)
-            except (json.JSONDecodeError, TypeError):
-                # 返回默认值
-                return StyleProfile()
+            if response and response.text():
+                try:
+                    scores = json.loads(response.text().strip())
+                    return StyleProfile(**scores)
+                except (json.JSONDecodeError, TypeError):
+                    # 返回默认值
+                    return StyleProfile()
+            return StyleProfile() # LLM响应为空，返回默认值
                 
         except Exception as e:
             logger.warning(f"风格档案提取失败: {e}")
@@ -250,15 +212,11 @@ class StyleAnalyzerService:
         
         return min(confidence, 1.0)
 
-    def _get_refine_model_provider(self):
-        """获取提炼模型提供商"""
-        try:
-            # 这里应该根据配置获取特定的强模型提供商
-            # 简化实现，使用当前提供商
-            return self.context.get_using_provider()
-        except Exception as e:
-            logger.error(f"获取提炼模型失败: {e}")
-            return None
+    def _get_refine_model_client(self) -> Optional[LLMClient]:
+        """获取提炼模型LLM客户端"""
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化。")
+        return self.refine_llm_client
 
     async def get_style_trends(self) -> Dict[str, Any]:
         """获取风格趋势分析"""
@@ -294,49 +252,26 @@ class StyleAnalyzerService:
             return {"error": "暂无基准风格数据"}
         
         try:
-            provider = self._get_refine_model_provider()
-            if not provider:
-                return {"error": "强模型不可用"}
+            llm_client = self._get_refine_model_client()
+            if not llm_client:
+                return {"error": "提炼模型LLM客户端未初始化，无法生成风格建议。"}
             
             current_style_data = self.baseline_style.__dict__
             
-            prompt = f"""
-基于当前的风格档案数据和目标人格，生成风格优化建议：
-
-当前风格档案：
-{json.dumps(current_style_data, ensure_ascii=False, indent=2)}
-
-目标人格：{target_persona}
-
-请返回JSON格式的优化建议：
-{{
-    "优化方向": {{
-        "需要加强": ["具体的风格维度和建议"],
-        "需要调整": ["需要调整的方面"],
-        "保持现状": ["已经较好的方面"]
-    }},
-    "具体建议": {{
-        "词汇使用": "词汇选择的具体建议",
-        "句式结构": "句式调整建议", 
-        "情感表达": "情感表达优化建议",
-        "互动方式": "互动方式改进建议"
-    }},
-    "实施策略": {{
-        "短期目标": "1-2周内可以改进的方面",
-        "中期目标": "1-2个月的改进方向",
-        "长期目标": "长期的风格发展目标"
-    }},
-    "风险提示": "需要注意的潜在风险和副作用"
-}}
-"""
+            prompt = self.prompts.STYLE_ANALYZER_GENERATE_STYLE_RECOMMENDATIONS_PROMPT.format(
+                current_style_data=json.dumps(current_style_data, ensure_ascii=False, indent=2),
+                target_persona=target_persona
+            )
             
-            response = await provider.text_chat(prompt)
+            response = await llm_client.chat_completion(prompt=prompt)
             
-            try:
-                recommendations = json.loads(response.strip())
-                return recommendations
-            except json.JSONDecodeError:
-                return {"error": "建议解析失败", "raw_response": response}
+            if response and response.text():
+                try:
+                    recommendations = json.loads(response.text().strip())
+                    return recommendations
+                except json.JSONDecodeError:
+                    return {"error": "建议解析失败", "raw_response": response.text()}
+            return {"error": "LLM响应为空"}
                 
         except Exception as e:
             logger.error(f"风格建议生成失败: {e}")

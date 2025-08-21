@@ -50,7 +50,7 @@ class IntelligentResponder:
         try:
             # 获取消息类型 (私聊或群聊)
             is_private_chat = event.is_private_chat()
-            is_group_chat = event.is_group_chat()
+            is_group_chat = bool(True if event.get_group_id() != None else False)  # 如果有group_id则为群聊
             message_text = event.get_message_str()
             
             if is_private_chat:
@@ -58,12 +58,12 @@ class IntelligentResponder:
                 logger.debug(f"私聊消息，将回复: {message_text[:50]}")
                 return True
             elif is_group_chat:
-                # 群聊消息只有被 @ 时才回复
-                if event.is_at_me():
-                    logger.debug(f"群聊消息被@，将回复: {message_text[:50]}")
+                # 群聊消息只有被 @ 或唤醒时才回复
+                if event.is_at_or_wake_command:
+                    logger.debug(f"群聊消息被@或唤醒，将回复: {message_text[:50]}")
                     return True
                 else:
-                    logger.debug(f"群聊消息未被@，不回复: {message_text[:50]}")
+                    logger.debug(f"群聊消息未被@或唤醒，不回复: {message_text[:50]}")
                     return False
             
             return False # 默认不回复

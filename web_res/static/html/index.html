@@ -7,17 +7,22 @@
     <link rel="stylesheet" href="/static/css/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 </head>
 <body>
     <div class="main-content" id="main-app-content">
         <div class="sidebar">
             <div class="sidebar-header">
                 <h2>自学习插件</h2>
+                <div class="status-indicator">
+                    <span class="status-dot active"></span>
+                    <span class="status-text">运行中</span>
+                </div>
             </div>
             <ul class="sidebar-menu">
                 <li class="menu-item active" data-page="dashboard">
                     <i class="material-icons">dashboard</i>
-                    <span>仪表盘</span>
+                    <span>可视化大屏</span>
                 </li>
                 <li class="menu-item" data-page="config">
                     <i class="material-icons">settings</i>
@@ -29,65 +34,343 @@
                 </li>
                 <li class="menu-item" data-page="metrics">
                     <i class="material-icons">analytics</i>
-                    <span>性能监控</span>
+                    <span>详细监控</span>
+                </li>
+                <li class="menu-item" data-page="learning-status">
+                    <i class="material-icons">psychology</i>
+                    <span>学习状态</span>
                 </li>
             </ul>
         </div>
         <div class="main-content-area">
             <header class="topbar">
-                <h1 id="page-title">仪表盘</h1>
+                <div class="topbar-left">
+                    <h1 id="page-title">可视化大屏</h1>
+                    <div class="breadcrumb">
+                        <span>自学习插件</span>
+                        <i class="material-icons">chevron_right</i>
+                        <span id="current-page">可视化大屏</span>
+                    </div>
+                </div>
+                <div class="topbar-right">
+                    <div class="refresh-indicator">
+                        <i class="material-icons refresh-icon">refresh</i>
+                        <span id="last-update">刚刚更新</span>
+                    </div>
+                    <div class="user-menu">
+                        <div class="user-info">
+                            <i class="material-icons">account_circle</i>
+                            <span>管理员</span>
+                        </div>
+                        <button class="logout-btn" id="logoutBtn">
+                            <i class="material-icons">logout</i>
+                            登出
+                        </button>
+                    </div>
+                </div>
             </header>
             <div class="content-area">
-                <!-- 页面内容将在这里加载 -->
+                <!-- 可视化大屏页面 -->
                 <div id="dashboard-page" class="page active">
-                    <h2>欢迎来到自学习插件管理后台</h2>
-                    <p>请从左侧菜单选择功能。</p>
-                    <!-- 仪表盘内容 -->
+                    <!-- 概览统计卡片 -->
+                    <div class="overview-stats">
+                        <div class="stat-card total-messages">
+                            <div class="stat-icon">
+                                <i class="material-icons">chat</i>
+                            </div>
+                            <div class="stat-content">
+                                <div class="stat-number" id="total-messages">0</div>
+                                <div class="stat-label">总消息数</div>
+                                <div class="stat-trend positive">
+                                    <i class="material-icons">trending_up</i>
+                                    <span id="messages-trend">+12%</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="stat-card filtered-messages">
+                            <div class="stat-icon">
+                                <i class="material-icons">filter_list</i>
+                            </div>
+                            <div class="stat-content">
+                                <div class="stat-number" id="filtered-messages">0</div>
+                                <div class="stat-label">筛选消息数</div>
+                                <div class="stat-trend positive">
+                                    <i class="material-icons">trending_up</i>
+                                    <span id="filtered-trend">+8%</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="stat-card llm-calls">
+                            <div class="stat-icon">
+                                <i class="material-icons">psychology</i>
+                            </div>
+                            <div class="stat-content">
+                                <div class="stat-number" id="total-llm-calls">0</div>
+                                <div class="stat-label">LLM调用次数</div>
+                                <div class="stat-trend positive">
+                                    <i class="material-icons">trending_up</i>
+                                    <span id="llm-trend">+15%</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="stat-card learning-sessions">
+                            <div class="stat-icon">
+                                <i class="material-icons">school</i>
+                            </div>
+                            <div class="stat-content">
+                                <div class="stat-number" id="learning-sessions">0</div>
+                                <div class="stat-label">学习会话数</div>
+                                <div class="stat-trend positive">
+                                    <i class="material-icons">trending_up</i>
+                                    <span id="sessions-trend">+5%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 主要图表区域 -->
+                    <div class="charts-grid">
+                        <!-- LLM调用分布 -->
+                        <div class="chart-container">
+                            <div class="chart-header">
+                                <h3>LLM模型调用分布</h3>
+                                <div class="chart-controls">
+                                    <select id="llm-time-range">
+                                        <option value="1h">近1小时</option>
+                                        <option value="24h" selected>近24小时</option>
+                                        <option value="7d">近7天</option>
+                                        <option value="30d">近30天</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="chart-content">
+                                <div id="llm-usage-pie" class="chart"></div>
+                            </div>
+                        </div>
+
+                        <!-- 消息处理趋势 -->
+                        <div class="chart-container">
+                            <div class="chart-header">
+                                <h3>消息处理趋势</h3>
+                                <div class="chart-controls">
+                                    <select id="message-time-range">
+                                        <option value="1h">近1小时</option>
+                                        <option value="24h" selected>近24小时</option>
+                                        <option value="7d">近7天</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="chart-content">
+                                <div id="message-trend-line" class="chart"></div>
+                            </div>
+                        </div>
+
+                        <!-- LLM响应时间分析 -->
+                        <div class="chart-container">
+                            <div class="chart-header">
+                                <h3>LLM响应时间分析</h3>
+                                <div class="chart-legend">
+                                    <span class="legend-item">
+                                        <span class="legend-color gpt4"></span>
+                                        GPT-4o
+                                    </span>
+                                    <span class="legend-item">
+                                        <span class="legend-color gpt4-mini"></span>
+                                        GPT-4o-mini
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="chart-content">
+                                <div id="response-time-bar" class="chart"></div>
+                            </div>
+                        </div>
+
+                        <!-- 学习进度概览 -->
+                        <div class="chart-container">
+                            <div class="chart-header">
+                                <h3>学习进度概览</h3>
+                                <div class="progress-summary">
+                                    <span id="learning-efficiency">效率: 85%</span>
+                                </div>
+                            </div>
+                            <div class="chart-content">
+                                <div id="learning-progress-gauge" class="chart"></div>
+                            </div>
+                        </div>
+
+                        <!-- 系统资源使用情况 -->
+                        <div class="chart-container">
+                            <div class="chart-header">
+                                <h3>系统状态监控</h3>
+                                <div class="status-indicators">
+                                    <span class="status-item">
+                                        <span class="status-dot active"></span>
+                                        消息抓取
+                                    </span>
+                                    <span class="status-item">
+                                        <span class="status-dot active"></span>
+                                        自动学习
+                                    </span>
+                                    <span class="status-item">
+                                        <span class="status-dot inactive"></span>
+                                        实时学习
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="chart-content">
+                                <div id="system-status-radar" class="chart"></div>
+                            </div>
+                        </div>
+
+                        <!-- 用户活跃度热力图 -->
+                        <div class="chart-container wide">
+                            <div class="chart-header">
+                                <h3>用户活跃度热力图</h3>
+                                <div class="chart-controls">
+                                    <button class="time-btn active" data-period="today">今天</button>
+                                    <button class="time-btn" data-period="week">本周</button>
+                                    <button class="time-btn" data-period="month">本月</button>
+                                </div>
+                            </div>
+                            <div class="chart-content">
+                                <div id="activity-heatmap" class="chart"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- 插件配置页面 -->
                 <div id="config-page" class="page">
-                    <h2>插件配置</h2>
-                    <div class="card">
-                        <h3>基础设置</h3>
-                        <div class="form-group">
-                            <label for="enableMessageCapture">消息抓取</label>
-                            <input type="checkbox" id="enableMessageCapture">
+                    <div class="config-section">
+                        <h2>基础配置</h2>
+                        <div class="config-grid">
+                            <div class="config-card">
+                                <h3>消息抓取设置</h3>
+                                <div class="form-group">
+                                    <label class="switch-label">
+                                        <input type="checkbox" id="enableMessageCapture">
+                                        <span class="switch-slider"></span>
+                                        启用消息抓取
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label for="targetQQList">目标QQ列表</label>
+                                    <textarea id="targetQQList" placeholder="输入QQ号，用逗号分隔"></textarea>
+                                </div>
+                            </div>
+
+                            <div class="config-card">
+                                <h3>学习设置</h3>
+                                <div class="form-group">
+                                    <label class="switch-label">
+                                        <input type="checkbox" id="enableAutoLearning">
+                                        <span class="switch-slider"></span>
+                                        启用自动学习
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label class="switch-label">
+                                        <input type="checkbox" id="enableRealtimeLearning">
+                                        <span class="switch-slider"></span>
+                                        启用实时学习
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label for="learningInterval">学习间隔(小时)</label>
+                                    <input type="number" id="learningInterval" min="1" max="168" value="6">
+                                </div>
+                            </div>
+
+                            <div class="config-card">
+                                <h3>模型配置</h3>
+                                <div class="form-group">
+                                    <label for="filterModel">筛选模型</label>
+                                    <select id="filterModel">
+                                        <option value="gpt-4o-mini">GPT-4o-mini</option>
+                                        <option value="gpt-3.5-turbo">GPT-3.5-turbo</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="refineModel">提炼模型</label>
+                                    <select id="refineModel">
+                                        <option value="gpt-4o">GPT-4o</option>
+                                        <option value="gpt-4">GPT-4</option>
+                                    </select>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label for="enableAutoLearning">自主学习</label>
-                            <input type="checkbox" id="enableAutoLearning">
+                        <div class="config-actions">
+                            <button class="btn btn-primary" id="saveConfig">
+                                <i class="material-icons">save</i>
+                                保存配置
+                            </button>
+                            <button class="btn btn-secondary" id="resetConfig">
+                                <i class="material-icons">refresh</i>
+                                重置配置
+                            </button>
                         </div>
-                        <div class="form-group">
-                            <label for="enableRealtimeLearning">实时学习</label>
-                            <input type="checkbox" id="enableRealtimeLearning">
-                        </div>
-                        <div class="form-group">
-                            <label for="enableWebInterface">Web界面</label>
-                            <input type="checkbox" id="enableWebInterface">
-                        </div>
-                        <button class="btn btn-primary" id="saveConfig">保存配置</button>
                     </div>
                 </div>
+
+                <!-- 人格审查页面 -->
                 <div id="persona-review-page" class="page">
-                    <h2>人格审查</h2>
-                    <div class="card">
-                        <h3>待审查的人格更新</h3>
-                        <ul id="persona-updates-list">
-                            <!-- 人格更新列表将在这里加载 -->
-                        </ul>
-                    </div>
-                </div>
-                <div id="metrics-page" class="page">
-                    <h2>性能监控</h2>
-                    <div class="card">
-                        <h3>LLM 调用统计</h3>
-                        <div id="llm-calls-metrics">
-                            <!-- LLM 调用统计将在这里加载 -->
+                    <div class="review-section">
+                        <div class="section-header">
+                            <h2>人格更新审查</h2>
+                            <div class="review-stats">
+                                <span class="stat">待审查: <strong id="pending-reviews">0</strong></span>
+                                <span class="stat">已批准: <strong id="approved-reviews">0</strong></span>
+                                <span class="stat">已拒绝: <strong id="rejected-reviews">0</strong></span>
+                            </div>
+                        </div>
+                        <div class="review-list" id="review-list">
+                            <!-- 人格更新列表将在这里动态加载 -->
                         </div>
                     </div>
-                    <div class="card">
-                        <h3>API 响应时间</h3>
-                        <div id="api-response-times-metrics">
-                            <!-- API 响应时间将在这里加载 -->
+                </div>
+
+                <!-- 详细监控页面 -->
+                <div id="metrics-page" class="page">
+                    <div class="metrics-section">
+                        <h2>详细性能监控</h2>
+                        <div class="metrics-grid">
+                            <div class="metric-card">
+                                <h3>API响应时间</h3>
+                                <div id="api-metrics-chart" class="chart"></div>
+                            </div>
+                            <div class="metric-card">
+                                <h3>数据库查询性能</h3>
+                                <div id="db-metrics-chart" class="chart"></div>
+                            </div>
+                            <div class="metric-card">
+                                <h3>内存使用情况</h3>
+                                <div id="memory-metrics-chart" class="chart"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 学习状态页面 -->
+                <div id="learning-status-page" class="page">
+                    <div class="learning-section">
+                        <h2>学习状态详情</h2>
+                        <div class="learning-overview">
+                            <div class="learning-card">
+                                <h3>当前会话</h3>
+                                <div class="session-info">
+                                    <p>会话ID: <span id="current-session-id">--</span></p>
+                                    <p>开始时间: <span id="session-start-time">--</span></p>
+                                    <p>处理消息: <span id="session-messages">0</span></p>
+                                    <p>学习状态: <span id="session-status" class="status-badge">停止</span></p>
+                                </div>
+                            </div>
+                            <div class="learning-card">
+                                <h3>学习历史</h3>
+                                <div id="learning-history-chart" class="chart"></div>
+                            </div>
                         </div>
                     </div>
                 </div>

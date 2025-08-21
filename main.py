@@ -69,12 +69,35 @@ class SelfLearningPlugin(star.Star):
             server_instance = Server(port=self.plugin_config.web_interface_port)
             if server_instance:
                 logger.info(f"Web 界面已启用，将在 http://{server_instance.host}:{server_instance.port} 启动")
+                # 直接启动服务器而不是等待 on_load
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    loop.create_task(self._start_web_server())
+                    logger.info("Web 服务器启动任务已创建")
+                except Exception as e:
+                    logger.error(f"创建 Web 服务器启动任务失败: {e}", exc_info=True)
             else:
                 logger.error("Web 界面初始化失败")
         else:
             logger.info("Web 界面未启用")
         
         logger.info("自学习插件初始化完成")
+
+    async def _start_web_server(self):
+        """启动Web服务器的异步方法"""
+        global server_instance
+        if server_instance:
+            logger.info("开始启动 Web 服务器...")
+            try:
+                await server_instance.start()
+                logger.info("Web 服务器启动成功")
+                
+                # 启动数据库管理器
+                await self.db_manager.start()
+                logger.info("数据库管理器启动完成")
+            except Exception as e:
+                logger.error(f"Web 服务器启动失败: {e}", exc_info=True)
 
     def _initialize_services(self):
         """初始化所有服务层组件 - 使用工厂模式"""
@@ -153,12 +176,27 @@ class SelfLearningPlugin(star.Star):
     
     async def on_load(self):
         """插件加载时启动 Web 服务器和数据库管理器"""
+        logger.info("开始执行 on_load 方法")
         global server_instance
         if self.plugin_config.enable_web_interface and server_instance:
-            await server_instance.start()
+            logger.info(f"准备启动 Web 服务器，地址: {server_instance.host}:{server_instance.port}")
+            try:
+                await server_instance.start()
+                logger.info("Web 服务器启动完成")
+            except Exception as e:
+                logger.error(f"Web 服务器启动失败: {e}", exc_info=True)
+        else:
+            if not self.plugin_config.enable_web_interface:
+                logger.info("Web 界面被禁用，跳过服务器启动")
+            if not server_instance:
+                logger.error("Server 实例为 None，无法启动 Web 服务器")
         
         # 启动数据库管理器，确保数据库表被创建
-        await self.db_manager.start()
+        try:
+            await self.db_manager.start()
+            logger.info("数据库管理器启动完成")
+        except Exception as e:
+            logger.error(f"数据库管理器启动失败: {e}", exc_info=True)
         
         logger.info("自学习插件加载完成")
 

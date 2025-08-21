@@ -3,64 +3,243 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>自学习插件管理后台 - 登录</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <title>登录 - 自学习插件管理后台</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+            background: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-container {
+            width: 100%;
+            max-width: 400px;
+            padding: 0 20px;
+        }
+
+        .login-form {
+            background: white;
+            border-radius: 16px;
+            border: 2px solid #e0e0e0;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            text-align: center;
+        }
+
+        .login-header {
+            margin-bottom: 32px;
+        }
+
+        .login-header h1 {
+            font-size: 28px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin: 0 0 8px 0;
+        }
+
+        .login-header p {
+            font-size: 16px;
+            color: #666;
+            margin: 0;
+        }
+
+        .input-group {
+            position: relative;
+            margin-bottom: 24px;
+            text-align: left;
+        }
+
+        .input-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .input-group input {
+            width: 100%;
+            height: 48px;
+            padding: 0 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 16px;
+            background: #f9fafb;
+            transition: all 0.3s ease;
+            box-sizing: border-box;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: #8b5cf6;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+        }
+
+        .submit-btn {
+            width: 100%;
+            height: 48px;
+            background: #8b5cf6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 8px;
+        }
+
+        .submit-btn:hover {
+            background: #7c3aed;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+        }
+
+        .submit-btn:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .error-message {
+            background: #fef2f2;
+            color: #dc2626;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-bottom: 20px;
+            border: 1px solid #fecaca;
+            display: none;
+        }
+
+        .success-message {
+            background: #f0fdf4;
+            color: #16a34a;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-bottom: 20px;
+            border: 1px solid #bbf7d0;
+            display: none;
+        }
+
+        .loading-spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top: 2px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .btn-content {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        @media (max-width: 480px) {
+            .login-form {
+                padding: 32px 24px;
+            }
+            
+            .login-header h1 {
+                font-size: 24px;
+            }
+        }
+    </style>
 </head>
 <body>
     <div class="login-container" id="login-container">
-        <div class="login-card">
-            <h2>自学习插件管理后台</h2>
-            <div class="form-group">
-                <label for="password">密码:</label>
-                <input type="password" id="password" placeholder="请输入密码">
+        <form class="login-form" id="loginForm">
+            <div class="login-header">
+                <h1>登录</h1>
+                <p>自学习插件管理后台</p>
             </div>
-            <button class="btn btn-primary" id="login-button">登录</button>
-            <p id="login-message" class="error-message"></p>
-        </div>
+            
+            <div id="errorMessage" class="error-message"></div>
+            <div id="successMessage" class="success-message"></div>
+            
+            <div class="input-group">
+                <label for="password">密码</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password">
+            </div>
+            
+            <button type="submit" class="submit-btn" id="submitBtn">
+                <div class="btn-content">
+                    <div class="loading-spinner" id="loadingSpinner"></div>
+                    <span id="btnText">登录</span>
+                </div>
+            </button>
+        </form>
     </div>
 
     <script>
-        document.addEventListener('DOMContentLoaded', async () => {
+        document.addEventListener('DOMContentLoaded', function() {
             const loginContainer = document.getElementById('login-container');
-            const loginButton = document.getElementById('login-button');
+            const loginButton = document.getElementById('submitBtn');
             const passwordInput = document.getElementById('password');
-            const loginMessage = document.getElementById('login-message');
+            const loginMessage = document.getElementById('errorMessage');
+            const successMessage = document.getElementById('successMessage');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+            const btnText = document.getElementById('btnText');
 
-            // 检查是否需要强制更改密码
-            const response = await fetch('/api/'); // 访问根API，服务器会根据密码状态重定向
-            if (response.redirected && response.url.includes('change_password')) {
-                window.location.href = response.url; // 如果服务器重定向到修改密码页面，则客户端也重定向
-                return;
+            // 焦点到密码输入框
+            passwordInput.focus();
+
+            function showError(message) {
+                loginMessage.textContent = message;
+                loginMessage.style.display = 'block';
+                successMessage.style.display = 'none';
             }
 
-            // 尝试自动登录（如果之前已登录且密码已更改）
-            const storedPassword = localStorage.getItem('plugin_password');
-            if (storedPassword) {
-                try {
-                    const loginResponse = await fetch('/api/login', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ password: storedPassword })
-                    });
-                    const loginData = await loginResponse.json();
-                    if (loginResponse.ok && !loginData.must_change) {
-                        window.location.href = '/'; // 自动登录成功，跳转到主页
-                        return;
-                    }
-                } catch (error) {
-                    console.error('Auto-login failed:', error);
+            function showSuccess(message) {
+                successMessage.textContent = message;
+                successMessage.style.display = 'block';
+                loginMessage.style.display = 'none';
+            }
+
+            function setLoading(loading) {
+                if (loading) {
+                    loadingSpinner.style.display = 'block';
+                    btnText.textContent = '登录中...';
+                    loginButton.disabled = true;
+                } else {
+                    loadingSpinner.style.display = 'none';
+                    btnText.textContent = '登录';
+                    loginButton.disabled = false;
                 }
             }
 
-            // 如果未自动登录成功，则显示登录页面
-            loginContainer.classList.remove('hidden');
+            // 检查URL参数，如果有强制更改密码标记则直接跳转
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('must_change') === 'true') {
+                window.location.href = '/api/plugin_change_password';
+                return;
+            }
+
+            // 显示登录页面
+            loginContainer.style.display = 'flex';
 
             loginButton.addEventListener('click', async () => {
                 const password = passwordInput.value;
+                setLoading(true);
+                
                 try {
                     const response = await fetch('/api/login', {
                         method: 'POST',
@@ -74,29 +253,31 @@
 
                     if (response.ok) {
                         if (data.must_change) {
-                            loginMessage.textContent = '登录成功，请更改默认密码。';
-                            loginMessage.classList.remove('error-message');
-                            loginMessage.classList.add('success-message');
+                            showSuccess('登录成功，请更改默认密码。');
                             setTimeout(() => {
-                                window.location.href = '/api/change_password';
+                                window.location.href = '/api/plugin_change_password';
                             }, 1500);
                         } else {
-                            localStorage.setItem('plugin_password', password); // 保存密码
-                            loginMessage.textContent = '登录成功！';
-                            loginMessage.classList.remove('error-message');
-                            loginMessage.classList.add('success-message');
-                            window.location.href = '/'; // 登录成功，跳转到主页
+                            showSuccess('登录成功！');
+                            setTimeout(() => {
+                                window.location.href = data.redirect || '/api/index';
+                            }, 1000);
                         }
                     } else {
-                        loginMessage.textContent = data.error || '登录失败。';
-                        loginMessage.classList.add('error-message');
-                        loginMessage.classList.remove('success-message');
+                        showError(data.error || '登录失败。');
                     }
                 } catch (error) {
                     console.error('Error:', error);
-                    loginMessage.textContent = '请求失败，请稍后再试。';
-                    loginMessage.classList.add('error-message');
-                    loginMessage.classList.remove('success-message');
+                    showError('请求失败，请稍后再试。');
+                } finally {
+                    setLoading(false);
+                }
+            });
+
+            // 回车键提交
+            passwordInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    loginButton.click();
                 }
             });
         });

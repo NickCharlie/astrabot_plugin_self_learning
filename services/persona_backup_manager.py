@@ -347,3 +347,12 @@ class PersonaBackupManager:
         except Exception as e:
             logger.error(f"获取备份统计失败: {e}")
             return {}
+
+    async def stop(self):
+        """停止服务"""
+        try:
+            logger.info("人格备份管理服务已停止")
+            return True
+        except Exception as e:
+            logger.error(f"停止人格备份管理服务失败: {e}")
+            return False

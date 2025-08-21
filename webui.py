@@ -673,6 +673,10 @@ class Server:
         self.config.bind = [f"{self.host}:{self.port}"]
         self.config.accesslog = "-" # 输出访问日志到 stdout
         self.config.errorlog = "-" # 输出错误日志到 stdout
+        # 添加其他必要的配置
+        self.config.loglevel = "INFO"
+        self.config.use_reloader = False
+        self.config.workers = 1
 
     async def start(self):
         """启动服务器"""
@@ -688,13 +692,20 @@ class Server:
                 hypercorn.asyncio.serve(app, self.config)
             )
             print(f"[DEBUG] 服务器任务已创建: {self.server_task}")
-            print(f"Quart server started at http://{self.host}:{self.port}")
-            await asyncio.sleep(1) # 等待一小段时间，让服务器有机会初始化
-            print(f"Quart server task created: {self.server_task}")
-            print(f"Quart server config: {self.config.bind}") # 添加日志
-            print(f"[DEBUG] 服务器任务状态: done={self.server_task.done()}, cancelled={self.server_task.cancelled()}")
+            print(f"✓ Quart web server started at http://{self.host}:{self.port}")
+            
+            # 等待更长时间让服务器完全启动
+            await asyncio.sleep(3)
+            
+            # 检查服务器状态
+            if self.server_task and not self.server_task.done():
+                print(f"✓ Web server is running successfully on http://{self.host}:{self.port}")
+                print(f"[DEBUG] 服务器任务状态: done={self.server_task.done()}, cancelled={self.server_task.cancelled()}")
+            else:
+                print(f"⚠️ Web server task completed unexpectedly")
+                
         except Exception as e:
-            print(f"Error starting Quart server: {e}")
+            print(f"❌ Error starting Quart server: {e}")
             import traceback
             traceback.print_exc() # 打印详细错误堆栈
             self.server_task = None

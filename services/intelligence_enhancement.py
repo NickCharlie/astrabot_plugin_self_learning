@@ -18,6 +18,7 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..core.patterns import AsyncServiceBase
+from ..utils.json_utils import safe_parse_llm_json
 from ..core.interfaces import IDataStorage, IPersonaManager
 from ..core.llm_client import LLMClient
 from ..core.compatibility_extensions import create_compatibility_extensions
@@ -288,8 +289,10 @@ class IntelligenceEnhancementService(AsyncServiceBase):
         )
         
         try:
-            return json.loads(response.strip())
-        except json.JSONDecodeError:
+            # 使用安全的JSON解析
+            default_emotions = {}
+            return safe_parse_llm_json(response.strip(), fallback_result=default_emotions)
+        except Exception:
             return {}
     
     async def _analyze_context_emotions(self, context_messages: List[Dict]) -> Dict[str, float]:
@@ -543,13 +546,19 @@ class IntelligenceEnhancementService(AsyncServiceBase):
         )
         
         try:
-            entities_data = json.loads(response.strip())
-            return [{
-                **entity,
-                'source_message': content[:200],
-                'timestamp': time.time()
-            } for entity in entities_data]
-        except json.JSONDecodeError:
+            # 使用安全的JSON解析
+            default_entities = []
+            entities_data = safe_parse_llm_json(response.strip(), fallback_result=default_entities)
+            
+            if entities_data and isinstance(entities_data, list):
+                return [{
+                    **entity,
+                    'source_message': content[:200],
+                    'timestamp': time.time()
+                } for entity in entities_data]
+            else:
+                return []
+        except Exception:
             return []
     
     async def _update_knowledge_graph(self, group_id: str, entities: List[Dict]):

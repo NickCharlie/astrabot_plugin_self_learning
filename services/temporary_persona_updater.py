@@ -902,5 +902,13 @@ class TemporaryPersonaUpdater:
         for task in self.expiry_tasks.values():
             task.cancel()
         self.expiry_tasks.clear()
-        
-        logger.info("临时人格清理完成")
+
+    async def stop(self):
+        """停止服务"""
+        try:
+            await self.cleanup_temp_personas()
+            logger.info("临时人格更新服务已停止")
+            return True
+        except Exception as e:
+            logger.error(f"停止临时人格更新服务失败: {e}")
+            return False

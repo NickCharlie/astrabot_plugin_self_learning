@@ -18,6 +18,7 @@ from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
 from ..core.llm_client import LLMClient # 导入自定义LLMClient
 from .database_manager import DatabaseManager # 导入 DatabaseManager
+from ..utils.json_utils import safe_parse_llm_json
 
 
 @dataclass
@@ -121,26 +122,156 @@ class MultidimensionalAnalyzer:
 
     async def start(self):
         """服务启动时加载用户画像和社交关系"""
-        # 假设每个群组有独立的画像和关系，这里需要一个 group_id
-        # 为了简化，暂时假设加载一个默认的或全局的画像和关系
-        # 实际应用中，可能需要根据当前处理的群组ID来加载
-        default_group_id = "global_profiles" # 或者从配置中获取
-        
-        # 加载所有用户画像 (这里需要 DatabaseManager 提供 load_all_user_profiles 方法)
-        # 暂时只加载一个示例用户
-        # loaded_profile_data = await self.db_manager.load_user_profile(default_group_id, "example_qq_id")
-        # if loaded_profile_data:
-        #     self.user_profiles[loaded_profile_data['qq_id']] = UserProfile(**loaded_profile_data)
-        #     logger.info(f"已从数据库加载用户画像: {loaded_profile_data['qq_id']}")
-        
-        # 加载所有社交关系 (这里需要 DatabaseManager 提供 load_all_social_relations 方法)
-        # loaded_social_graph = await self.db_manager.load_social_graph(default_group_id)
-        # for relation_data in loaded_social_graph:
-        #     relation = SocialRelation(**relation_data)
-        #     self.social_graph[relation.from_user].append(relation)
-        # logger.info(f"已从数据库加载 {len(loaded_social_graph)} 条社交关系。")
-        
-        logger.info("多维度学习引擎启动，准备进行分析。")
+        try:
+            logger.info("多维度分析器启动中...")
+            
+            # 初始化用户画像存储
+            self.user_profiles = {}
+            self.social_graph = {}
+            
+            # 从数据库加载已有的用户画像数据
+            try:
+                await self._load_user_profiles_from_db()
+            except Exception as e:
+                logger.warning(f"从数据库加载用户画像失败: {e}")
+            
+            # 从数据库加载社交关系数据
+            try:
+                await self._load_social_relations_from_db()
+            except Exception as e:
+                logger.warning(f"从数据库加载社交关系失败: {e}")
+            
+            # 初始化分析缓存
+            self._analysis_cache = {}
+            self._cache_timeout = 3600  # 1小时缓存
+            
+            # 启动定期清理任务
+            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+            
+            logger.info(f"多维度分析器启动完成，已加载 {len(self.user_profiles)} 个用户画像，{len(self.social_graph)} 个社交关系")
+            
+        except Exception as e:
+            logger.error(f"多维度分析器启动失败: {e}")
+            raise
+    
+    async def _load_user_profiles_from_db(self):
+        """从数据库加载用户画像"""
+        try:
+            # 获取所有活跃群组
+            conn = await self.db_manager._get_messages_db_connection()
+            cursor = await conn.cursor()
+            
+            # 查询最近活跃的用户
+            await cursor.execute('''
+                SELECT DISTINCT group_id, sender_id, sender_name, COUNT(*) as msg_count
+                FROM raw_messages 
+                WHERE timestamp > ? 
+                GROUP BY group_id, sender_id
+                HAVING msg_count >= 5
+                ORDER BY msg_count DESC
+                LIMIT 500
+            ''', (time.time() - 7 * 24 * 3600,))  # 最近7天
+            
+            users = await cursor.fetchall()
+            
+            for group_id, sender_id, sender_name, msg_count in users:
+                if group_id and sender_id:
+                    user_key = f"{group_id}:{sender_id}"
+                    self.user_profiles[user_key] = {
+                        'user_id': sender_id,
+                        'name': sender_name or f"用户{sender_id}",
+                        'group_id': group_id,
+                        'message_count': msg_count,
+                        'topics': [],
+                        'communication_style': {},
+                        'last_activity': time.time(),
+                        'created_at': time.time()
+                    }
+            
+            await conn.close()
+            logger.info(f"从数据库加载了 {len(self.user_profiles)} 个用户画像")
+            
+        except Exception as e:
+            logger.error(f"从数据库加载用户画像失败: {e}")
+    
+    async def _load_social_relations_from_db(self):
+        """从数据库加载社交关系"""
+        try:
+            # 初始化社交图谱
+            self.social_graph = {}
+            
+            # 分析用户间的交互关系
+            conn = await self.db_manager._get_messages_db_connection()
+            cursor = await conn.cursor()
+            
+            # 查询用户在同一群组中的交互
+            await cursor.execute('''
+                SELECT group_id, sender_id, COUNT(*) as interaction_count
+                FROM raw_messages 
+                WHERE timestamp > ? AND group_id IS NOT NULL
+                GROUP BY group_id, sender_id
+                HAVING interaction_count >= 3
+            ''', (time.time() - 7 * 24 * 3600,))
+            
+            interactions = await cursor.fetchall()
+            
+            # 构建基础社交关系
+            for group_id, sender_id, count in interactions:
+                if sender_id not in self.social_graph:
+                    self.social_graph[sender_id] = []
+                
+                # 为简化，暂时记录用户在各群组的活跃度
+                relation_info = {
+                    'target_user': group_id,
+                    'relation_type': 'group_member',
+                    'strength': min(1.0, count / 100.0),  # 基于消息数量计算关系强度
+                    'last_interaction': time.time()
+                }
+                self.social_graph[sender_id].append(relation_info)
+            
+            await conn.close()
+            logger.info(f"构建了 {len(self.social_graph)} 个用户的社交关系")
+            
+        except Exception as e:
+            logger.error(f"加载社交关系失败: {e}")
+    
+    async def _periodic_cleanup(self):
+        """定期清理过期缓存和数据"""
+        try:
+            while True:
+                await asyncio.sleep(3600)  # 每小时执行一次
+                
+                current_time = time.time()
+                
+                # 清理分析缓存
+                if hasattr(self, '_analysis_cache'):
+                    expired_keys = [
+                        k for k, v in self._analysis_cache.items()
+                        if current_time - v.get('timestamp', 0) > self._cache_timeout
+                    ]
+                    for key in expired_keys:
+                        del self._analysis_cache[key]
+                    
+                    if expired_keys:
+                        logger.debug(f"清理了 {len(expired_keys)} 个过期的分析缓存")
+                
+                # 清理过期的用户活动记录
+                cutoff_time = current_time - 30 * 24 * 3600  # 30天前
+                expired_users = [
+                    k for k, v in self.user_profiles.items()
+                    if v.get('last_activity', 0) < cutoff_time
+                ]
+                
+                for user_key in expired_users:
+                    del self.user_profiles[user_key]
+                    
+                if expired_users:
+                    logger.info(f"清理了 {len(expired_users)} 个过期的用户画像")
+                    
+        except asyncio.CancelledError:
+            logger.info("定期清理任务已取消")
+        except Exception as e:
+            logger.error(f"定期清理任务异常: {e}")
 
     async def filter_message_with_llm(self, message_text: str, current_persona_description: str) -> bool:
         """
@@ -211,7 +342,7 @@ class MultidimensionalAnalyzer:
                     "learning_value": 0.5
                 }
                 
-                scores = self._safe_parse_llm_json(response.text(), fallback_result=default_scores)
+                scores = safe_parse_llm_json(response.text(), fallback_result=default_scores)
                 
                 if scores and isinstance(scores, dict):
                     # 确保所有分数都在0-1之间
@@ -285,6 +416,137 @@ class MultidimensionalAnalyzer:
             logger.error(f"多维度上下文分析失败: {e}")
             return {}
 
+    async def analyze_message_batch(self, 
+                                   message_text: str,
+                                   sender_id: str = '',
+                                   sender_name: str = '',
+                                   group_id: str = '',
+                                   timestamp: float = None) -> Dict[str, Any]:
+        """
+        批量分析消息上下文（用于学习流程中的批量处理）
+        
+        Args:
+            message_text: 消息文本
+            sender_id: 发送者ID
+            sender_name: 发送者名称
+            group_id: 群组ID
+            timestamp: 时间戳
+            
+        Returns:
+            Dict[str, Any]: 分析结果
+        """
+        try:
+            logger.debug(f"批量分析消息: 发送者={sender_id}, 群组={group_id}, 消息长度={len(message_text)}")
+            
+            # 更新用户画像（如果有足够信息）
+            if sender_id and group_id:
+                await self._update_user_profile_batch(group_id, sender_id, sender_name, message_text, timestamp)
+            
+            # 分析话题偏好
+            topic_context = await self._analyze_topic_context(message_text)
+            
+            # 分析情感倾向
+            emotional_context = await self._analyze_emotional_context(message_text)
+            
+            # 分析沟通风格
+            style_context = await self._analyze_communication_style(message_text)
+            
+            # 计算相关性得分
+            contextual_relevance = await self._calculate_enhanced_relevance(
+                message_text, sender_id, group_id, timestamp
+            )
+            
+            # 构建简化的社交上下文
+            social_context = {}
+            if sender_id and group_id:
+                social_context = await self._get_user_social_context(group_id, sender_id)
+            
+            return {
+                'user_profile': self.user_profiles.get(f"{group_id}:{sender_id}", {}) if sender_id and group_id else {},
+                'social_context': social_context,
+                'topic_context': topic_context,
+                'emotional_context': emotional_context,
+                'temporal_context': {'timestamp': timestamp or time.time()},
+                'style_context': style_context,
+                'contextual_relevance': contextual_relevance
+            }
+            
+        except Exception as e:
+            logger.error(f"批量消息分析失败: {e}")
+            # 返回基础分析结果
+            return await self._analyze_message_context_without_event(message_text)
+
+    async def _update_user_profile_batch(self, group_id: str, sender_id: str, sender_name: str, 
+                                       message_text: str, timestamp: float = None):
+        """批量更新用户画像（简化版本）"""
+        try:
+            user_key = f"{group_id}:{sender_id}"
+            current_time = timestamp or time.time()
+            
+            if user_key not in self.user_profiles:
+                self.user_profiles[user_key] = {
+                    'user_id': sender_id,
+                    'name': sender_name,
+                    'group_id': group_id,
+                    'message_count': 0,
+                    'topics': [],
+                    'communication_style': {},
+                    'last_activity': current_time,
+                    'created_at': current_time
+                }
+            
+            profile = self.user_profiles[user_key]
+            profile['message_count'] += 1
+            profile['last_activity'] = current_time
+            
+            # 更新沟通风格
+            style = await self._analyze_communication_style(message_text)
+            if style:
+                profile['communication_style'].update(style)
+                
+        except Exception as e:
+            logger.error(f"批量更新用户画像失败: {e}")
+
+    async def _calculate_enhanced_relevance(self, message_text: str, sender_id: str = '', 
+                                          group_id: str = '', timestamp: float = None) -> float:
+        """计算增强的相关性得分"""
+        try:
+            # 基础相关性
+            base_relevance = await self._calculate_basic_relevance(message_text)
+            
+            # 用户活跃度加成
+            user_bonus = 0.0
+            if sender_id and group_id:
+                user_key = f"{group_id}:{sender_id}"
+                if user_key in self.user_profiles:
+                    user_profile = self.user_profiles[user_key]
+                    # 活跃用户的消息获得更高权重
+                    if user_profile.get('message_count', 0) > 10:
+                        user_bonus = 0.1
+                    
+            return min(1.0, base_relevance + user_bonus)
+            
+        except Exception as e:
+            logger.error(f"计算增强相关性失败: {e}")
+            return await self._calculate_basic_relevance(message_text)
+
+    async def _get_user_social_context(self, group_id: str, sender_id: str) -> Dict[str, Any]:
+        """获取用户社交上下文"""
+        try:
+            user_key = f"{group_id}:{sender_id}"
+            if user_key in self.user_profiles:
+                profile = self.user_profiles[user_key]
+                return {
+                    'message_count': profile.get('message_count', 0),
+                    'activity_level': 'high' if profile.get('message_count', 0) > 50 else 'low',
+                    'last_activity': profile.get('last_activity', 0)
+                }
+            return {}
+            
+        except Exception as e:
+            logger.error(f"获取用户社交上下文失败: {e}")
+            return {}
+
     async def _analyze_message_context_without_event(self, message_text: str) -> Dict[str, Any]:
         """在没有event对象时分析消息上下文（简化版本）"""
         try:
@@ -319,7 +581,7 @@ class MultidimensionalAnalyzer:
                 'emotional_context': {},
                 'temporal_context': {},
                 'style_context': {},
-                'contextual_relevance': 0.5  # 默认中等相关性
+                'contextual_relevance': 0.5
             }
 
     async def _calculate_basic_relevance(self, message_text: str) -> float:
@@ -466,7 +728,7 @@ class MultidimensionalAnalyzer:
                 
                 if response and response.text():
                     # 使用安全的JSON解析方法
-                    emotion_scores = self._safe_parse_llm_json(
+                    emotion_scores = safe_parse_llm_json(
                         response.text(), 
                         fallback_result=self._simple_emotional_analysis(message_text)
                     )
@@ -484,60 +746,7 @@ class MultidimensionalAnalyzer:
                 logger.warning(f"LLM情感分析失败，使用简化算法: {e}")
         except Exception as e:
             logger.warning(f"LLM情感分析失败 - 2，使用简化算法: {e}")
-
-    def _safe_parse_llm_json(self, response_text: str, fallback_result: Any = None) -> Any:
-        """
-        安全解析LLM响应中的JSON，处理markdown代码块和额外文本
-        
-        Args:
-            response_text: LLM的原始响应文本
-            fallback_result: 解析失败时的备用结果
-            
-        Returns:
-            解析成功的JSON对象，或者备用结果
-        """
-        try:
-            # 清理响应文本
-            cleaned_text = response_text.strip()
-            
-            # 去除markdown代码块标记
-            if cleaned_text.startswith("```json"):
-                cleaned_text = cleaned_text[7:]
-            elif cleaned_text.startswith("```"):
-                cleaned_text = cleaned_text[3:]
-            
-            if cleaned_text.endswith("```"):
-                cleaned_text = cleaned_text[:-3]
-            
-            cleaned_text = cleaned_text.strip()
-            
-            # 寻找JSON对象的开始和结束位置
-            json_start = cleaned_text.find('{')
-            json_end = cleaned_text.rfind('}')
-            
-            if json_start != -1 and json_end != -1 and json_end > json_start:
-                # 提取JSON部分
-                json_text = cleaned_text[json_start:json_end+1]
-                return json.loads(json_text)
-            else:
-                # 如果找不到JSON对象，尝试寻找数组
-                array_start = cleaned_text.find('[')
-                array_end = cleaned_text.rfind(']')
-                
-                if array_start != -1 and array_end != -1 and array_end > array_start:
-                    json_text = cleaned_text[array_start:array_end+1]
-                    return json.loads(json_text)
-                else:
-                    # 最后尝试直接解析整个清理后的文本
-                    return json.loads(cleaned_text)
-                    
-        except json.JSONDecodeError as e:
-            logger.debug(f"JSON解析失败: {e}，原始响应: {response_text[:200]}...")
-            return fallback_result
-        except Exception as e:
-            logger.warning(f"JSON解析异常: {e}")
-            return fallback_result
-
+            return self._simple_emotional_analysis(message_text)
 
     def _simple_emotional_analysis(self, message_text: str) -> Dict[str, float]:
         """简化的情感分析（备用）"""
@@ -896,7 +1105,7 @@ class MultidimensionalAnalyzer:
             
             if response and response.text():
                 try:
-                    insights = json.loads(response.text().strip())
+                    insights = safe_parse_llm_json(response.text())
                     return insights
                 except json.JSONDecodeError:
                     logger.warning(f"LLM响应JSON解析失败，返回简化分析。响应内容: {response.text()}")
@@ -938,7 +1147,7 @@ class MultidimensionalAnalyzer:
             
             if response and response.text():
                 try:
-                    traits = json.loads(response.text().strip())
+                    traits = safe_parse_llm_json(response.text())
                     return traits
                 except json.JSONDecodeError:
                     logger.warning(f"LLM响应JSON解析失败，返回简化人格分析。响应内容: {response.text()}")
@@ -1060,3 +1269,54 @@ class MultidimensionalAnalyzer:
         }
         
         return graph_data
+    
+    async def stop(self):
+        """停止多维度分析器服务"""
+        try:
+            # 取消定期清理任务
+            if hasattr(self, '_cleanup_task') and self._cleanup_task:
+                self._cleanup_task.cancel()
+                try:
+                    await self._cleanup_task
+                except asyncio.CancelledError:
+                    pass
+                self._cleanup_task = None
+            
+            # 保存重要的用户画像数据到数据库（如果需要持久化）
+            try:
+                await self._save_user_profiles_to_db()
+            except Exception as e:
+                logger.warning(f"保存用户画像到数据库失败: {e}")
+            
+            # 清理内存数据
+            if hasattr(self, 'user_profiles'):
+                self.user_profiles.clear()
+            if hasattr(self, 'social_graph'):
+                self.social_graph.clear()
+            if hasattr(self, '_analysis_cache'):
+                self._analysis_cache.clear()
+            if hasattr(self, 'nickname_mapping'):
+                self.nickname_mapping.clear()
+            
+            logger.info("多维度分析器已停止")
+            return True
+            
+        except Exception as e:
+            logger.error(f"停止多维度分析器失败: {e}")
+            return False
+    
+    async def _save_user_profiles_to_db(self):
+        """保存用户画像数据到数据库"""
+        try:
+            if not self.user_profiles:
+                return
+                
+            # 这里可以实现将用户画像数据保存到专门的用户画像表
+            # 当前简化实现，仅记录统计信息
+            logger.info(f"需要保存 {len(self.user_profiles)} 个用户画像到数据库")
+            
+            # TODO: 实现具体的数据库保存逻辑
+            # 例如：CREATE TABLE user_profiles (group_id, user_id, profile_data, updated_at)
+            
+        except Exception as e:
+            logger.error(f"保存用户画像到数据库失败: {e}")

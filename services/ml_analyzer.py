@@ -26,6 +26,7 @@ from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
 from ..core.llm_client import LLMClient # 导入 LLMClient
 from .database_manager import DatabaseManager # 确保 DatabaseManager 被正确导入
+from ..utils.json_utils import safe_parse_llm_json
 
 
 class LightweightMLAnalyzer:
@@ -58,10 +59,221 @@ class LightweightMLAnalyzer:
         
         logger.info("轻量级ML分析器初始化完成")
 
+    async def reinforcement_memory_replay(self, group_id: str, new_messages: List[Dict[str, Any]], current_persona: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        强化学习记忆重放：通过强化模型分析历史数据和新数据的关联性，优化学习策略
+        """
+        if not self.reinforce_llm_client:
+            logger.warning("强化模型LLM客户端未初始化，无法执行强化学习记忆重放。")
+            return {}
+
+        try:
+            # 获取历史学习数据
+            historical_data = await self.db_manager.get_learning_history_for_reinforcement(group_id, limit=50)
+            
+            # 准备数据格式
+            historical_summary = {
+                "successful_patterns": [h.get('successful_pattern', '') for h in historical_data if h.get('success')],
+                "failed_patterns": [h.get('failed_pattern', '') for h in historical_data if not h.get('success')],
+                "average_quality_score": sum([h.get('quality_score', 0) for h in historical_data]) / max(len(historical_data), 1),
+                "learning_trends": self._analyze_learning_trends(historical_data)
+            }
+            
+            new_data_summary = {
+                "message_count": len(new_messages),
+                "avg_message_length": sum([len(msg.get('message', '')) for msg in new_messages]) / max(len(new_messages), 1),
+                "dominant_topics": self._extract_dominant_topics(new_messages),
+                "emotional_distribution": await self._analyze_emotional_distribution(new_messages)
+            }
+
+            # 调用强化模型进行记忆重放分析
+            response = await self.reinforce_llm_client.chat_completion(
+                prompt=self.prompts.REINFORCEMENT_LEARNING_MEMORY_REPLAY_PROMPT.format(
+                    historical_learning_data=json.dumps(historical_summary, ensure_ascii=False, indent=2),
+                    new_learning_data=json.dumps(new_data_summary, ensure_ascii=False, indent=2),
+                    current_persona=json.dumps(current_persona, ensure_ascii=False, indent=2)
+                ),
+                model_name=self.config.reinforce_model_name
+            )
+
+            if response and response.text():
+                # 清理响应文本，移除markdown标识符
+                clean_response = self._clean_llm_json_response(response.text())
+                
+                try:
+                    reinforcement_result = safe_parse_llm_json(clean_response)
+                    
+                    # 保存强化学习结果到数据库
+                    await self.db_manager.save_reinforcement_learning_result(group_id, {
+                        'timestamp': time.time(),
+                        'replay_analysis': reinforcement_result.get('replay_analysis', {}),
+                        'optimization_strategy': reinforcement_result.get('optimization_strategy', {}),
+                        'reinforcement_feedback': reinforcement_result.get('reinforcement_feedback', {}),
+                        'next_action': reinforcement_result.get('next_action', '')
+                    })
+                    
+                    logger.info(f"强化学习记忆重放完成，奖励分数: {reinforcement_result.get('reinforcement_feedback', {}).get('reward_score', 0)}")
+                    return reinforcement_result
+                    
+                except json.JSONDecodeError:
+                    logger.error(f"强化模型返回的JSON格式不正确: {clean_response}")
+                    return {}
+            return {}
+            
+        except Exception as e:
+            logger.error(f"执行强化学习记忆重放失败: {e}")
+            return {}
+
+    async def reinforcement_incremental_tuning(self, group_id: str, base_persona: Dict[str, Any], 
+                                               incremental_updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        强化学习增量微调：通过强化模型智能融合基础人格和增量更新
+        """
+        if not self.reinforce_llm_client:
+            logger.warning("强化模型LLM客户端未初始化，无法执行增量微调。")
+            return {}
+
+        try:
+            # 获取融合历史数据
+            fusion_history = await self.db_manager.get_persona_fusion_history(group_id, limit=10)
+            
+            # 调用强化模型进行增量微调分析
+            response = await self.reinforce_llm_client.chat_completion(
+                prompt=self.prompts.REINFORCEMENT_LEARNING_INCREMENTAL_TUNING_PROMPT.format(
+                    base_persona=json.dumps(base_persona, ensure_ascii=False, indent=2),
+                    incremental_updates=json.dumps(incremental_updates, ensure_ascii=False, indent=2),
+                    fusion_history=json.dumps(fusion_history, ensure_ascii=False, indent=2)
+                ),
+                model_name=self.config.reinforce_model_name
+            )
+
+            if response and response.text():
+                # 清理响应文本，移除markdown标识符
+                clean_response = self._clean_llm_json_response(response.text())
+                
+                try:
+                    tuning_result = safe_parse_llm_json(clean_response)
+                    
+                    # 保存融合结果到历史记录
+                    await self.db_manager.save_persona_fusion_result(group_id, {
+                        'timestamp': time.time(),
+                        'base_persona_hash': hash(str(base_persona)),
+                        'incremental_hash': hash(str(incremental_updates)),
+                        'fusion_result': tuning_result,
+                        'compatibility_score': tuning_result.get('compatibility_analysis', {}).get('feature_compatibility', 0)
+                    })
+                    
+                    logger.info(f"强化学习增量微调完成，预期改进: {tuning_result.get('performance_prediction', {}).get('expected_improvement', 0)}")
+                    return tuning_result
+                    
+                except json.JSONDecodeError:
+                    logger.error(f"强化模型返回的JSON格式不正确: {clean_response}")
+                    return {}
+            return {}
+            
+        except Exception as e:
+            logger.error(f"执行强化学习增量微调失败: {e}")
+            return {}
+
+    async def reinforcement_strategy_optimization(self, group_id: str) -> Dict[str, Any]:
+        """
+        强化学习策略优化：基于历史表现数据动态调整学习策略
+        """
+        if not self.reinforce_llm_client:
+            logger.warning("强化模型LLM客户端未初始化，无法执行策略优化。")
+            return {}
+
+        try:
+            # 获取学习历史数据和性能指标
+            learning_history = await self.db_manager.get_learning_performance_history(group_id, limit=30)
+            current_strategy = {
+                "learning_rate": self.config.learning_interval_hours / 24.0,
+                "batch_size": self.config.max_messages_per_batch,
+                "confidence_threshold": self.config.confidence_threshold,
+                "quality_threshold": self.config.style_update_threshold
+            }
+            
+            performance_metrics = self._calculate_performance_metrics(learning_history)
+            
+            # 调用强化模型进行策略优化
+            response = await self.reinforce_llm_client.chat_completion(
+                prompt=self.prompts.REINFORCEMENT_LEARNING_STRATEGY_OPTIMIZATION_PROMPT.format(
+                    learning_history=json.dumps(learning_history, ensure_ascii=False, indent=2),
+                    current_strategy=json.dumps(current_strategy, ensure_ascii=False, indent=2),
+                    performance_metrics=json.dumps(performance_metrics, ensure_ascii=False, indent=2)
+                ),
+                model_name=self.config.reinforce_model_name
+            )
+
+            if response and response.text():
+                # 清理响应文本，移除markdown标识符
+                clean_response = self._clean_llm_json_response(response.text())
+                
+                try:
+                    optimization_result = safe_parse_llm_json(clean_response)
+                    
+                    # 保存策略优化结果
+                    await self.db_manager.save_strategy_optimization_result(group_id, {
+                        'timestamp': time.time(),
+                        'original_strategy': current_strategy,
+                        'optimization_result': optimization_result,
+                        'expected_improvement': optimization_result.get('expected_improvements', {})
+                    })
+                    
+                    logger.info(f"强化学习策略优化完成，预期学习速度提升: {optimization_result.get('expected_improvements', {}).get('learning_speed', 0)}")
+                    return optimization_result
+                    
+                except json.JSONDecodeError:
+                    logger.error(f"强化模型返回的JSON格式不正确: {clean_response}")
+                    return {}
+            return {}
+        except Exception as e:
+            logger.error(f"策略优化执行失败: {e}")
+            return {}
+
+    def _clean_llm_json_response(self, response_text: str) -> str:
+        """清理LLM响应中的markdown标识符和其他格式化字符 - 兼容现有的_safe_parse_llm_json方法"""
+        import re
+        
+        # 清理响应文本
+        cleaned_text = response_text.strip()
+        
+        # 去除markdown代码块标记
+        if cleaned_text.startswith("```json"):
+            cleaned_text = cleaned_text[7:]
+        elif cleaned_text.startswith("```"):
+            cleaned_text = cleaned_text[3:]
+        
+        if cleaned_text.endswith("```"):
+            cleaned_text = cleaned_text[:-3]
+        
+        cleaned_text = cleaned_text.strip()
+        
+        # 移除其他常见的markdown标识符
+        cleaned_text = re.sub(r'^\s*```\w*\s*', '', cleaned_text, flags=re.MULTILINE)
+        cleaned_text = re.sub(r'```\s*$', '', cleaned_text, flags=re.MULTILINE)
+        
+        # 寻找JSON对象的开始和结束位置
+        json_start = cleaned_text.find('{')
+        json_end = cleaned_text.rfind('}')
+        
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            # 提取JSON部分
+            cleaned_text = cleaned_text[json_start:json_end+1]
+        else:
+            # 如果找不到JSON对象，尝试寻找数组
+            array_start = cleaned_text.find('[')
+            array_end = cleaned_text.rfind(']')
+            
+            if array_start != -1 and array_end != -1 and array_end > array_start:
+                cleaned_text = cleaned_text[array_start:array_end+1]
+        
+        return cleaned_text
+
     async def replay_memory(self, group_id: str, new_messages: List[Dict[str, Any]], current_persona: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         记忆重放：将历史数据与新数据混合，并交给提炼模型进行处理。
-        这模拟了LLM的“增量微调”过程，通过重新暴露历史数据来巩固学习。
+        这模拟了LLM的"增量微调"过程，通过重新暴露历史数据来巩固学习。
         """
         if not self.refine_llm_client:
             logger.warning("提炼模型LLM客户端未初始化，无法执行记忆重放。")
@@ -103,8 +315,156 @@ class LightweightMLAnalyzer:
             )
 
             if response and response.text():
+                # 清理响应文本，移除markdown标识符
+                clean_response = self._clean_llm_json_response(response.text())
+                
                 try:
-                    refined_data = json.loads(response.text().strip())
+                    refined_data = safe_parse_llm_json(clean_response)
+                    logger.info(f"记忆重放提炼结果: {refined_data}")
+                    # 这里可以将 refined_data 传递给 PersonaUpdater 进行人格更新
+                    # 或者在 ProgressiveLearning 模块中处理
+                    return refined_data
+                except json.JSONDecodeError:
+                    logger.error(f"提炼模型返回的JSON格式不正确: {clean_response}")
+                    return {}
+            return {}
+        except Exception as e:
+            logger.error(f"执行记忆重放失败: {e}")
+            return {}
+
+    def _analyze_learning_trends(self, historical_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """分析学习趋势"""
+        if not historical_data:
+            return {}
+        
+        quality_scores = [h.get('quality_score', 0) for h in historical_data]
+        success_rate = sum([1 for h in historical_data if h.get('success', False)]) / len(historical_data)
+        
+        # 计算趋势
+        if len(quality_scores) >= 3:
+            recent_avg = sum(quality_scores[-3:]) / 3
+            early_avg = sum(quality_scores[:3]) / 3
+            trend = (recent_avg - early_avg) / max(early_avg, 0.1)
+        else:
+            trend = 0.0
+        
+        return {
+            "average_quality": sum(quality_scores) / len(quality_scores),
+            "success_rate": success_rate,
+            "quality_trend": trend,
+            "total_sessions": len(historical_data)
+        }
+
+    def _extract_dominant_topics(self, messages: List[Dict[str, Any]]) -> List[str]:
+        """提取主要话题"""
+        if not SKLEARN_AVAILABLE or len(messages) < 5:
+            return []
+        
+        try:
+            texts = [msg.get('message', '') for msg in messages if len(msg.get('message', '')) > 10]
+            if len(texts) < 3:
+                return []
+            
+            # 使用TF-IDF提取关键词
+            vectorizer = TfidfVectorizer(max_features=10, ngram_range=(1, 2))
+            tfidf_matrix = vectorizer.fit_transform(texts)
+            feature_names = vectorizer.get_feature_names_out()
+            
+            # 获取平均TF-IDF分数
+            mean_scores = tfidf_matrix.mean(axis=0).A1
+            top_indices = mean_scores.argsort()[-5:][::-1]
+            
+            return [feature_names[i] for i in top_indices]
+            
+        except Exception as e:
+            logger.error(f"提取主要话题失败: {e}")
+            return []
+
+    async def _analyze_emotional_distribution(self, messages: List[Dict[str, Any]]) -> Dict[str, float]:
+        """分析情感分布"""
+        try:
+            # 使用现有的情感分析方法
+            return await self._analyze_sentiment_with_llm(messages)
+        except Exception as e:
+            logger.error(f"分析情感分布失败: {e}")
+            return self._simple_sentiment_analysis(messages)
+
+    def _calculate_performance_metrics(self, learning_history: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """计算性能指标"""
+        if not learning_history:
+            return {}
+        
+        quality_scores = [h.get('quality_score', 0) for h in learning_history]
+        learning_times = [h.get('learning_time', 0) for h in learning_history]
+        success_count = sum([1 for h in learning_history if h.get('success', False)])
+        
+        return {
+            "average_quality": sum(quality_scores) / len(quality_scores),
+            "quality_variance": np.var(quality_scores),
+            "success_rate": success_count / len(learning_history),
+            "average_learning_time": sum(learning_times) / max(len(learning_times), 1),
+            "total_sessions": len(learning_history),
+            "improvement_rate": self._calculate_improvement_rate(quality_scores)
+        }
+
+    def _calculate_improvement_rate(self, quality_scores: List[float]) -> float:
+        """计算改进率"""
+        if len(quality_scores) < 4:
+            return 0.0
+        
+        # 比较前半部分和后半部分的平均分
+        mid = len(quality_scores) // 2
+        first_half_avg = sum(quality_scores[:mid]) / mid
+        second_half_avg = sum(quality_scores[mid:]) / (len(quality_scores) - mid)
+        
+        if first_half_avg == 0:
+            return 0.0
+        
+        return (second_half_avg - first_half_avg) / first_half_avg
+
+    async def replay_memory(self, group_id: str, new_messages: List[Dict[str, Any]], current_persona: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not self.refine_llm_client:
+            logger.warning("提炼模型LLM客户端未初始化，无法执行记忆重放。")
+            return []
+
+        try:
+            # 获取最近一段时间的历史消息
+            # 假设我们获取过去30天的消息作为历史数据
+            history_messages = await self.db_manager.get_messages_for_replay(group_id, days=30, limit=self.config.max_messages_per_batch * 2)
+            
+            # 将新消息与历史消息混合
+            # 可以根据时间戳进行排序，或者简单地拼接
+            all_messages = history_messages + new_messages
+            # 确保消息不重复，并按时间排序
+            unique_messages = {msg['message_id']: msg for msg in all_messages}
+            sorted_messages = sorted(unique_messages.values(), key=lambda x: x['timestamp'])
+            
+            # 限制总消息数量，避免过大的上下文
+            if len(sorted_messages) > self.config.max_messages_per_batch * 2:
+                sorted_messages = sorted_messages[-self.config.max_messages_per_batch * 2:]
+
+            logger.info(f"执行记忆重放，混合消息数量: {len(sorted_messages)}")
+
+            # 将混合后的消息交给提炼模型进行处理
+            # 这里可以设计一个更复杂的prompt，让LLM从这些消息中提炼新的知识或风格
+            # 示例：让LLM总结这些消息的特点，并与当前人格进行对比
+            messages_text = "\n".join([msg['message'] for msg in sorted_messages])
+            
+            system_prompt = self.prompts.ML_ANALYZER_REPLAY_MEMORY_SYSTEM_PROMPT.format(
+                current_persona_description=current_persona['description']
+            )
+            prompt = self.prompts.ML_ANALYZER_REPLAY_MEMORY_PROMPT.format(
+                messages_text=messages_text
+            )
+
+            response = await self.refine_llm_client.chat_completion(
+                prompt=prompt,
+                system_prompt=system_prompt
+            )
+
+            if response and response.text():
+                try:
+                    refined_data = safe_parse_llm_json(response.text())
                     logger.info(f"记忆重放提炼结果: {refined_data}")
                     # 这里可以将 refined_data 传递给 PersonaUpdater 进行人格更新
                     # 或者在 ProgressiveLearning 模块中处理
@@ -441,7 +801,7 @@ class LightweightMLAnalyzer:
             response = await self.refine_llm_client.chat_completion(prompt=prompt)
             if response and response.text():
                 try:
-                    sentiment_scores = json.loads(response.text().strip())
+                    sentiment_scores = safe_parse_llm_json(response.text())
                     # 确保所有分数都在0-1之间
                     for key, value in sentiment_scores.items():
                         sentiment_scores[key] = max(0.0, min(float(value), 1.0))

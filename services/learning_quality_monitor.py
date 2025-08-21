@@ -13,6 +13,7 @@ from astrbot.api.star import Context
 
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
+from ..utils.json_utils import safe_parse_llm_json
 
 
 @dataclass
@@ -236,8 +237,16 @@ class LearningQualityMonitor:
                 model_name=self.config.refine_model_name
             )
             if response and response.text():
-                try:
-                    emotional_scores = json.loads(response.text().strip())
+                # 使用安全的JSON解析
+                default_scores = {
+                    "积极": 0.5,
+                    "消极": 0.5,
+                    "中性": 0.5
+                }
+                
+                emotional_scores = safe_parse_llm_json(response.text(), fallback_result=default_scores)
+                
+                if emotional_scores and isinstance(emotional_scores, dict):
                     # 确保所有分数都在0-1之间
                     for key, value in emotional_scores.items():
                         emotional_scores[key] = max(0.0, min(float(value), 1.0))
@@ -247,8 +256,7 @@ class LearningQualityMonitor:
                     negative_score = emotional_scores.get("消极", 0.5)
                     balance_score = (positive_score - negative_score + 1.0) / 2.0  # 转换到0-1范围
                     return max(0.0, min(balance_score, 1.0))
-                except json.JSONDecodeError:
-                    logger.warning(f"LLM响应JSON解析失败，返回简化情感平衡性分析。响应内容: {response.text()}")
+                else:
                     return self._simple_emotional_balance(messages)
             return self._simple_emotional_balance(messages)
         except Exception as e:
@@ -516,3 +524,12 @@ class LearningQualityMonitor:
                         
         except Exception as e:
             logger.warning(f"动态调整阈值失败: {e}")
+
+    async def stop(self):
+        """停止服务"""
+        try:
+            logger.info("学习质量监控服务已停止")
+            return True
+        except Exception as e:
+            logger.error(f"停止学习质量监控服务失败: {e}")
+            return False

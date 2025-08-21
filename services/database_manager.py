@@ -52,6 +52,30 @@ class DatabaseManager(AsyncServiceBase):
             self._logger.error(f"关闭数据库连接失败: {e}", exc_info=True)
             return False
 
+    async def close_all_connections(self):
+        """关闭所有数据库连接"""
+        try:
+            # 关闭全局消息数据库连接
+            if self.messages_db_connection:
+                await self.messages_db_connection.close()
+                self.messages_db_connection = None
+                self._logger.info("全局消息数据库连接已关闭")
+            
+            # 关闭所有群组数据库连接
+            for group_id, conn in list(self.group_db_connections.items()):
+                try:
+                    await conn.close()
+                    self._logger.info(f"群组 {group_id} 数据库连接已关闭")
+                except Exception as e:
+                    self._logger.error(f"关闭群组 {group_id} 数据库连接失败: {e}")
+            
+            self.group_db_connections.clear()
+            self._logger.info("所有数据库连接已关闭")
+            
+        except Exception as e:
+            self._logger.error(f"关闭数据库连接过程中发生错误: {e}")
+            raise
+
     async def _get_messages_db_connection(self) -> aiosqlite.Connection:
         """获取全局消息数据库连接"""
         if self.messages_db_connection is None:
@@ -167,6 +191,66 @@ class DatabaseManager(AsyncServiceBase):
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_filtered_messages_used ON filtered_messages(used_for_learning)')
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_persona_update_records_status ON persona_update_records(status)')
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_persona_update_records_group_id ON persona_update_records(group_id)')
+            
+            # 新增强化学习相关表
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS reinforcement_learning_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    replay_analysis TEXT,
+                    optimization_strategy TEXT,
+                    reinforcement_feedback TEXT,
+                    next_action TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS persona_fusion_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    base_persona_hash INTEGER,
+                    incremental_hash INTEGER,
+                    fusion_result TEXT,
+                    compatibility_score REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS strategy_optimization_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    original_strategy TEXT,
+                    optimization_result TEXT,
+                    expected_improvement TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS learning_performance_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT NOT NULL,
+                    session_id TEXT,
+                    timestamp REAL NOT NULL,
+                    quality_score REAL,
+                    learning_time REAL,
+                    success BOOLEAN,
+                    successful_pattern TEXT,
+                    failed_pattern TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 为强化学习表创建索引
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_reinforcement_learning_group ON reinforcement_learning_results(group_id)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_persona_fusion_group ON persona_fusion_history(group_id)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_strategy_optimization_group ON strategy_optimization_results(group_id)')
+            await cursor.execute('CREATE INDEX IF NOT EXISTS idx_learning_performance_group ON learning_performance_history(group_id)')
             
             await conn.commit()
             logger.info("全局消息数据库初始化完成")
@@ -1199,6 +1283,241 @@ class DatabaseManager(AsyncServiceBase):
             
         except Exception as e:
             self._logger.error(f"获取知识实体失败: {e}")
+            return []
+
+    # 新增强化学习相关方法
+    async def save_reinforcement_learning_result(self, group_id: str, result_data: Dict[str, Any]) -> bool:
+        """保存强化学习结果"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                INSERT INTO reinforcement_learning_results 
+                (group_id, timestamp, replay_analysis, optimization_strategy, reinforcement_feedback, next_action)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                group_id,
+                result_data.get('timestamp', time.time()),
+                json.dumps(result_data.get('replay_analysis', {}), ensure_ascii=False),
+                json.dumps(result_data.get('optimization_strategy', {}), ensure_ascii=False),
+                json.dumps(result_data.get('reinforcement_feedback', {}), ensure_ascii=False),
+                result_data.get('next_action', '')
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"保存强化学习结果失败: {e}")
+            return False
+
+    async def get_learning_history_for_reinforcement(self, group_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """获取用于强化学习的历史数据"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT timestamp, quality_score, success, successful_pattern, failed_pattern
+                FROM learning_performance_history 
+                WHERE group_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (group_id, limit))
+            
+            history = []
+            for row in await cursor.fetchall():
+                history.append({
+                    'timestamp': row[0],
+                    'quality_score': row[1],
+                    'success': bool(row[2]),
+                    'successful_pattern': row[3] or '',
+                    'failed_pattern': row[4] or ''
+                })
+            
+            return history
+            
+        except Exception as e:
+            logger.error(f"获取强化学习历史数据失败: {e}")
+            return []
+
+    async def save_persona_fusion_result(self, group_id: str, fusion_data: Dict[str, Any]) -> bool:
+        """保存人格融合结果"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                INSERT INTO persona_fusion_history 
+                (group_id, timestamp, base_persona_hash, incremental_hash, fusion_result, compatibility_score)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                group_id,
+                fusion_data.get('timestamp', time.time()),
+                fusion_data.get('base_persona_hash'),
+                fusion_data.get('incremental_hash'),
+                json.dumps(fusion_data.get('fusion_result', {}), ensure_ascii=False),
+                fusion_data.get('compatibility_score', 0.0)
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"保存人格融合结果失败: {e}")
+            return False
+
+    async def get_persona_fusion_history(self, group_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """获取人格融合历史"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT timestamp, base_persona_hash, incremental_hash, fusion_result, compatibility_score
+                FROM persona_fusion_history 
+                WHERE group_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (group_id, limit))
+            
+            history = []
+            for row in await cursor.fetchall():
+                fusion_result = {}
+                try:
+                    fusion_result = json.loads(row[3]) if row[3] else {}
+                except json.JSONDecodeError:
+                    logger.warning(f"解析融合结果JSON失败: {row[3]}")
+                
+                history.append({
+                    'timestamp': row[0],
+                    'base_persona_hash': row[1],
+                    'incremental_hash': row[2],
+                    'fusion_result': fusion_result,
+                    'compatibility_score': row[4]
+                })
+            
+            return history
+            
+        except Exception as e:
+            logger.error(f"获取人格融合历史失败: {e}")
+            return []
+
+    async def save_strategy_optimization_result(self, group_id: str, optimization_data: Dict[str, Any]) -> bool:
+        """保存策略优化结果"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                INSERT INTO strategy_optimization_results 
+                (group_id, timestamp, original_strategy, optimization_result, expected_improvement)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                group_id,
+                optimization_data.get('timestamp', time.time()),
+                json.dumps(optimization_data.get('original_strategy', {}), ensure_ascii=False),
+                json.dumps(optimization_data.get('optimization_result', {}), ensure_ascii=False),
+                json.dumps(optimization_data.get('expected_improvement', {}), ensure_ascii=False)
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"保存策略优化结果失败: {e}")
+            return False
+
+    async def get_learning_performance_history(self, group_id: str, limit: int = 30) -> List[Dict[str, Any]]:
+        """获取学习性能历史数据"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT session_id, timestamp, quality_score, learning_time, success
+                FROM learning_performance_history 
+                WHERE group_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (group_id, limit))
+            
+            history = []
+            for row in await cursor.fetchall():
+                history.append({
+                    'session_id': row[0],
+                    'timestamp': row[1],
+                    'quality_score': row[2] or 0.0,
+                    'learning_time': row[3] or 0.0,
+                    'success': bool(row[4])
+                })
+            
+            return history
+            
+        except Exception as e:
+            logger.error(f"获取学习性能历史失败: {e}")
+            return []
+
+    async def save_learning_performance_record(self, group_id: str, performance_data: Dict[str, Any]) -> bool:
+        """保存学习性能记录"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                INSERT INTO learning_performance_history 
+                (group_id, session_id, timestamp, quality_score, learning_time, success, successful_pattern, failed_pattern)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                group_id,
+                performance_data.get('session_id', ''),
+                performance_data.get('timestamp', time.time()),
+                performance_data.get('quality_score', 0.0),
+                performance_data.get('learning_time', 0.0),
+                performance_data.get('success', False),
+                performance_data.get('successful_pattern', ''),
+                performance_data.get('failed_pattern', '')
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"保存学习性能记录失败: {e}")
+            return False
+
+    async def get_messages_for_replay(self, group_id: str, days: int = 30, limit: int = 100) -> List[Dict[str, Any]]:
+        """获取用于记忆重放的消息"""
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            # 获取指定天数内的消息
+            cutoff_time = time.time() - (days * 24 * 3600)
+            
+            await cursor.execute('''
+                SELECT id, message, sender_id, group_id, timestamp
+                FROM raw_messages 
+                WHERE group_id = ? AND timestamp > ? AND processed = TRUE
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (group_id, cutoff_time, limit))
+            
+            messages = []
+            for row in await cursor.fetchall():
+                messages.append({
+                    'message_id': row[0],
+                    'message': row[1],
+                    'sender_id': row[2],
+                    'group_id': row[3],
+                    'timestamp': row[4]
+                })
+            
+            return messages
+            
+        except Exception as e:
+            logger.error(f"获取记忆重放消息失败: {e}")
             return []
 
     async def save_user_preferences(self, group_id: str, user_id: str, preferences: Dict[str, Any]) -> bool:

@@ -340,3 +340,12 @@ class PersonaAnalyzer:
                 keywords.append(word)
         
         return keywords
+
+    async def stop(self):
+        """停止服务"""
+        try:
+            self._logger.info("人格更新服务已停止")
+            return True
+        except Exception as e:
+            self._logger.error(f"停止人格更新服务失败: {e}")
+            return False

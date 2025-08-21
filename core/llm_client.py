@@ -28,6 +28,44 @@ class LLMClient:
     def __init__(self):
         self.client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60.0)) # 设置超时时间
 
+    def _get_provider_info(self, api_url: str, model_name: str) -> str:
+        """获取API提供商信息用于日志"""
+        if 'deepseek.com' in api_url:
+            return f"DeepSeek ({model_name})"
+        elif 'openai.com' in api_url:
+            return f"OpenAI ({model_name})"
+        elif 'anthropic.com' in api_url:
+            return f"Anthropic ({model_name})"
+        else:
+            return f"Custom API ({model_name})"
+
+    def _validate_api_url(self, api_url: str, model_name: str = "") -> str:
+        """验证并补全API URL为完整端点路径
+        
+        虽然建议用户提供完整路径，但为了兼容性，会自动补全常见的端点：
+        - https://api.deepseek.com/chat/completions
+        - https://api.openai.com/v1/chat/completions  
+        - https://yunwu.zeabur.app/v1/chat/completions
+        """
+        if not api_url:
+            return api_url
+            
+        # 移除尾部斜杠
+        api_url = api_url.rstrip('/')
+        
+        # 如果已经包含完整端点，直接返回
+        if api_url.endswith('/chat/completions'):
+            return api_url
+        
+        # 自动补全端点路径
+        if api_url.endswith('/v1'):
+            return api_url + '/chat/completions'
+        elif not api_url.endswith('/completions'):
+            # 如果不以/v1结尾，默认添加/v1/chat/completions
+            return api_url + '/v1/chat/completions'
+        
+        return api_url
+
     async def chat_completion(
         self,
         api_url: str,
@@ -74,21 +112,36 @@ class LLMClient:
             **kwargs
         }
         
-        # 确保API URL包含完整的endpoint路径
-        if not api_url.endswith('/chat/completions'):
-            if api_url.endswith('/v1'):
-                api_url = api_url + '/chat/completions'
-            elif not api_url.endswith('/'):
-                api_url = api_url + '/v1/chat/completions'
-            else:
-                api_url = api_url + 'v1/chat/completions'
+        # 根据模型名称进行特殊处理
+        model_lower = model_name.lower()
+        
+        # DeepSeek模型特殊处理
+        if 'deepseek' in model_lower:
+            payload.setdefault("stream", False)  # 确保非流式输出
+            # 对于deepseek-reasoner模型，使用更适合推理的参数
+            if 'reasoner' in model_lower:
+                payload.setdefault("temperature", 0.1)  # 思考模式建议较低温度
+                payload.setdefault("top_p", 0.95)
+                
+        # OpenAI模型特殊处理
+        elif any(model in model_lower for model in ['gpt-', 'text-', 'davinci']):
+            payload.setdefault("temperature", 0.7)
+            
+        # Claude模型特殊处理
+        elif 'claude' in model_lower:
+            # Anthropic可能有不同的参数格式
+            payload.setdefault("temperature", 0.7)
+        
+        # 验证API URL是完整路径
+        api_url = self._validate_api_url(api_url, model_name)
 
         last_error = None
         
         # 实施重试机制
         for attempt in range(max_retries):
             try:
-                logger.debug(f"Calling LLM API: {api_url} with model {model_name} (attempt {attempt + 1}/{max_retries})")
+                provider_info = self._get_provider_info(api_url, model_name)
+                logger.debug(f"调用 {provider_info} API: {api_url} (尝试 {attempt + 1}/{max_retries})")
                 async with self.client.post(api_url, headers=headers, json=payload) as response:
                     # 检查HTTP状态码，区分可重试和不可重试的错误
                     if response.status in [401, 403, 404]:  # 认证、权限、资源不存在错误，不可重试

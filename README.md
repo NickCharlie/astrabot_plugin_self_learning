@@ -78,7 +78,6 @@ AstrBot 智能自学习插件是一个为 AstrBot 框架设计的**全功能 AI 
 - **`style_analyzer.py`**: 深度对话风格分析与量化
 - **`learning_quality_monitor.py`**: 学习质量实时监控与评估
 - **`progressive_learning.py`**: 渐进式学习流程协调
-- **`intelligent_responder.py`**: 个性化智能回复生成
 - **`ml_analyzer.py`**: 机器学习增强分析
 - **`persona_manager.py`**: 动态人格管理
 - **`persona_updater.py`**: 智能人格更新
@@ -210,13 +209,6 @@ AstrBot 智能自学习插件是一个为 AstrBot 框架设计的**全功能 AI 
 | `max_ml_sample_size` | int | 100 | 机器学习分析的最大样本数量，控制资源使用 |
 | `ml_cache_timeout_hours` | int | 1 | 机器学习分析结果的缓存时间 |
 
-### 🧠 智能回复设置 (Intelligent_Reply_Settings)
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enable_intelligent_reply` | bool | false | 是否启用基于用户画像的智能回复功能 |
-| `reply_probability` | float | 0.1 | 智能回复的触发概率，0-1之间 |
-| `context_window_size` | int | 5 | 构建回复时考虑的历史消息数量 |
 
 ### 💾 人格备份设置 (Persona_Backup_Settings)
 
@@ -252,39 +244,6 @@ AstrBot 智能自学习插件是一个为 AstrBot 框架设计的**全功能 AI 
 | `debug_mode` | bool | false | 启用详细的调试日志输出 |
 | `save_raw_messages` | bool | true | 是否保存未经处理的原始消息用于分析 |
 | `auto_backup_interval_days` | int | 7 | 学习数据自动备份的间隔天数，0为禁用 |
-
-### 🎯 配置示例
-
-```json
-{
-  "Self_Learning_Basic": {
-    "enable_message_capture": true,
-    "enable_auto_learning": true,
-    "enable_realtime_learning": false,
-    "enable_web_interface": true
-  },
-  "Target_Settings": {
-    "target_qq_list": [],
-    "current_persona_name": "default"
-  },
-  "Model_Configuration": {
-    "filter_model_name": "gpt-4o-mini",
-    "refine_model_name": "gpt-4o",
-    "reinforce_model_name": "gpt-4o"
-  },
-  "Affection_System_Settings": {
-    "enable_affection_system": true,
-    "max_total_affection": 250,
-    "max_user_affection": 100,
-    "daily_mood_change": true
-  },
-  "Mood_System_Settings": {
-    "enable_daily_mood": true,
-    "mood_change_hour": 6,
-    "mood_persistence_hours": 24
-  }
-}
-```
 
 ### 💡 配置建议
 

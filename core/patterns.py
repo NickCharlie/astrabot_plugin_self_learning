@@ -406,10 +406,20 @@ class ServiceRegistry(metaclass=SingletonABCMeta):
         
         for name, service in self._services.items():
             try:
-                result = await service.stop()
-                results.append(result)
-                if not result:
-                    self._logger.error(f"服务 {name} 停止失败")
+                # 检查服务是否有stop方法
+                if hasattr(service, 'stop') and callable(getattr(service, 'stop')):
+                    result = await service.stop()
+                    results.append(result)
+                    if not result:
+                        self._logger.error(f"服务 {name} 停止失败")
+                    else:
+                        self._logger.info(f"服务 {name} 已停止")
+                else:
+                    self._logger.warning(f"服务 {name} 没有stop方法，跳过停止")
+                    results.append(True)  # 没有stop方法就认为成功
+            except AttributeError as e:
+                self._logger.error(f"停止服务 {name} 异常：{e}")
+                results.append(False)
             except Exception as e:
                 self._logger.error(f"停止服务 {name} 异常: {e}")
                 results.append(False)

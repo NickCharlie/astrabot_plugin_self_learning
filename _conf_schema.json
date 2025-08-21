@@ -94,7 +94,7 @@
       "filter_api_url": {
         "description": "筛选模型API URL",
         "type": "string",
-        "hint": "自定义筛选模型的API接口地址",
+        "hint": "自定义筛选模型的API接口地址。必须是完整路径，例如：https://api.deepseek.com/chat/completions 或 https://api.openai.com/v1/chat/completions",
         "default": null
       },
       "filter_api_key": {
@@ -106,7 +106,7 @@
       "refine_api_url": {
         "description": "提炼模型API URL",
         "type": "string",
-        "hint": "自定义提炼模型的API接口地址",
+        "hint": "自定义提炼模型的API接口地址。必须是完整路径，例如：https://api.deepseek.com/chat/completions 或 https://api.openai.com/v1/chat/completions",
         "default": null
       },
       "refine_api_key": {
@@ -118,7 +118,7 @@
       "reinforce_api_url": {
         "description": "强化模型API URL",
         "type": "string",
-        "hint": "自定义强化模型的API接口地址",
+        "hint": "自定义强化模型的API接口地址。必须是完整路径，例如：https://api.deepseek.com/chat/completions 或 https://api.openai.com/v1/chat/completions",
         "default": null
       },
       "reinforce_api_key": {
@@ -245,31 +245,6 @@
         "type": "int",
         "hint": "机器学习分析结果的缓存时间",
         "default": 1
-      }
-    }
-  },
-  "Intelligent_Reply_Settings": {
-    "description": "智能回复设置", 
-    "type": "object",
-    "hint": "基于用户画像的智能回复配置",
-    "items": {
-      "enable_intelligent_reply": {
-        "description": "启用智能回复",
-        "type": "bool",
-        "hint": "是否启用基于用户画像的智能回复功能",
-        "default": false
-      },
-      "reply_probability": {
-        "description": "回复概率",
-        "type": "float",
-        "hint": "智能回复的触发概率，0-1之间",
-        "default": 0.1
-      },
-      "context_window_size": {
-        "description": "上下文窗口大小",
-        "type": "int",
-        "hint": "构建回复时考虑的历史消息数量",
-        "default": 5
       }
     }
   },

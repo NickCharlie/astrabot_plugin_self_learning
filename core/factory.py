@@ -18,6 +18,7 @@ from ..config import PluginConfig
 from .llm_client import LLMClient # 导入 LLMClient
 from ..exceptions import ServiceError # 从 exceptions.py 导入 ServiceError
 from ..statics import prompts # 导入 prompts 模块
+from ..utils.json_utils import safe_parse_llm_json
 
 
 class ServiceFactory(IServiceFactory):
@@ -424,7 +425,7 @@ class ServiceFactory(IServiceFactory):
             self.create_style_analyzer()
             self.create_quality_monitor()
             self.create_ml_analyzer()
-            self.create_intelligent_responder()
+            self.create_intelligent_responder()  # 重新启用智能回复器
             self.create_persona_manager()
             self.create_multidimensional_analyzer()
             self.create_progressive_learning()
@@ -524,8 +525,15 @@ class MessageFilter:
             )
             
             if response and response.get('text'):
-                try:
-                    llm_result = json.loads(response['text'])
+                # 使用安全的JSON解析
+                default_result = {
+                    'suitable': False,
+                    'confidence': 0.0
+                }
+                
+                llm_result = safe_parse_llm_json(response['text'], fallback_result=default_result)
+                
+                if llm_result and isinstance(llm_result, dict):
                     suitable = llm_result.get('suitable', False)
                     confidence = llm_result.get('confidence', 0.0)
                     
@@ -533,9 +541,9 @@ class MessageFilter:
                     
                     # 结合置信度阈值进行判断
                     return suitable and confidence >= self.config.confidence_threshold
-                except json.JSONDecodeError:
-                    self._logger.warning(f"LLM 返回结果不是有效的 JSON: {response['text']}", exc_info=True)
-                    return False # LLM 返回无效 JSON，认为不适合
+                else:
+                    self._logger.warning(f"LLM 返回结果不是有效的字典: {response['text']}")
+                    return False # LLM 返回无效结果，认为不适合
             else:
                 self._logger.warning("LLM 筛选未返回有效结果。")
                 return False # LLM 未返回结果，认为不适合

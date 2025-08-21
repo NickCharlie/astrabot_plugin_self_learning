@@ -205,3 +205,13 @@ class MessageCollectorService:
         except Exception as e:
             logger.error(f"更新学习批次失败: {e}")
             raise DataStorageError(f"更新学习批次失败: {str(e)}")
+
+    async def stop(self):
+        """停止服务，保存状态"""
+        try:
+            await self.save_state()
+            logger.info("消息收集服务已停止")
+            return True
+        except Exception as e:
+            logger.error(f"停止消息收集服务失败: {e}")
+            return False

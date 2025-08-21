@@ -34,13 +34,13 @@ class IntelligentResponder:
         self.context = context
         self.db_manager = db_manager
         self.llm_client = llm_client
-        self.prompts = prompts # 添加 prompts
+        self.prompts = prompts
         
-        # 回复策略配置
-        self.enable_intelligent_reply = config.enable_intelligent_reply
-        self.context_window_size = config.context_window_size
+        # 设置默认回复策略 - 不依赖配置文件
+        self.enable_intelligent_reply = True  # 默认启用智能回复
+        self.context_window_size = 5  # 默认上下文窗口大小
         
-        logger.info("智能回复器初始化完成")
+        logger.info("智能回复器初始化完成 - 使用默认配置")
 
     async def should_respond(self, event: AstrMessageEvent) -> bool:
         """判断是否应该回复此消息"""
@@ -112,21 +112,30 @@ class IntelligentResponder:
                 logger.warning("未找到可用的LLM提供商")
                 return None
             
+            # 使用框架当前的人格设定作为系统提示词
+            provider = self.context.get_using_provider()
+            system_prompt = None
+            if provider and hasattr(provider, 'curr_personality') and provider.curr_personality:
+                system_prompt = provider.curr_personality.get('prompt', '你是一个友好、智能的助手。')
+            else:
+                system_prompt = '你是一个友好、智能的助手。'
+            
             # 使用传入的 llm_client 进行聊天补全
             response = await self.llm_client.chat_completion(
-                api_url=self.config.refine_api_url, # 使用 refine_api_url
-                api_key=self.config.refine_api_key, # 使用 refine_api_key
-                model_name=self.config.refine_model_name, # 使用 refine_model_name
+                api_url=self.config.refine_api_url or "https://api.openai.com/v1/chat/completions", 
+                api_key=self.config.refine_api_key or "", 
+                model_name=self.config.refine_model_name or "gpt-4o", 
                 prompt=enhanced_prompt,
-                system_prompt=self.config.intelligent_responder_system_prompt, # 使用配置中的系统提示
-                temperature=self.config.intelligent_responder_temperature, # 使用配置中的温度
-                max_tokens=self.PROMPT_RESPONSE_WORD_LIMIT # 限制回复长度
+                system_prompt=system_prompt,  # 使用框架的人格设定
+                temperature=0.7,  # 使用默认温度
+                max_tokens=self.PROMPT_RESPONSE_WORD_LIMIT
             )
             
-            if response and response.get('text'):
+            if response and response.text():
+                response_text = response.text()
                 # 记录回复
-                await self._record_response(group_id, sender_id, message_text, response['text'])
-                return response['text'].strip()
+                await self._record_response(group_id, sender_id, message_text, response_text)
+                return response_text.strip()
             else:
                 logger.warning("LLM 未返回有效回复。")
                 return None
@@ -171,20 +180,33 @@ class IntelligentResponder:
         """构建增强的提示词"""
         prompt_parts = []
         
-        # 基础人格设定
-        current_persona = self.config.current_persona or self.prompts.INTELLIGENT_RESPONDER_DEFAULT_PERSONA_PROMPT
-        prompt_parts.append(f"人格设定: {current_persona}")
+        # 基础人格设定 - 使用框架当前的完整人格设定（包含增量更新）
+        provider = self.context.get_using_provider()
+        current_persona = "你是一个友好、智能的助手。"  # 默认人格
+        has_incremental_updates = False
+        
+        if provider and hasattr(provider, 'curr_personality') and provider.curr_personality:
+            current_persona = provider.curr_personality.get('prompt', current_persona)
+            # 检查是否包含增量更新
+            has_incremental_updates = "【增量更新" in current_persona
+            logger.debug(f"获取到当前人格设定长度: {len(current_persona)} 字符，包含增量更新: {has_incremental_updates}")
+        
+        # 添加简要的上下文说明
+        if has_incremental_updates:
+            prompt_parts.append("请基于当前人格设定（包含最新的增量更新）和以下上下文信息进行回复：")
+        else:
+            prompt_parts.append("请基于当前人格设定和以下上下文信息进行回复：")
         
         # 用户画像信息
         if context_info['sender_profile']:
             profile = context_info['sender_profile']
             prompt_parts.append(f"""
-用户信息:
-- QQ号: {profile.get('qq_id', '未知')}
-- 昵称: {profile.get('qq_name', '未知')}
-- 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}
-- 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}
-""")
+            用户信息:
+            - QQ号: {profile.get('qq_id', '未知')}
+            - 昵称: {profile.get('qq_name', '未知')}
+            - 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}
+            - 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}
+            """)
         
         # 社交关系
         if context_info['social_relations']:
@@ -209,13 +231,13 @@ class IntelligentResponder:
         
         # 回复要求
         prompt_parts.append("""
-请基于以上信息生成一个自然、智能的回复。要求:
-1. 符合设定的人格特征
-2. 考虑用户的沟通风格和偏好
-3. 适应当前的群聊氛围
-4. 回复简洁明了，不超过100字
-5. 语言风格要自然流畅
-""")
+            请基于以上信息生成一个自然、智能的回复。要求:
+            1. 符合设定的人格特征
+            2. 考虑用户的沟通风格和偏好
+            3. 适应当前的群聊氛围
+            4. 回复简洁明了，不超过100字
+            5. 语言风格要自然流畅
+            """)
         
         return "\n\n".join(prompt_parts)
 
@@ -246,20 +268,22 @@ class IntelligentResponder:
             logger.error(f"记录回复失败: {e}")
 
     async def send_intelligent_response(self, event: AstrMessageEvent):
-        """发送智能回复"""
+        """发送智能回复 - 返回回复内容供main.py使用yield发送"""
         try:
             if not await self.should_respond(event):
-                return
+                return None
             
             response = await self.generate_intelligent_response(event)
             
             if response:
-                # 通过事件系统发送回复
-                await event.send(response)
-                logger.info(f"已发送智能回复: {response[:self.PROMPT_MESSAGE_LENGTH_LIMIT]}...") # 使用常量
+                logger.info(f"生成智能回复: {response[:self.PROMPT_MESSAGE_LENGTH_LIMIT]}...")
+                return response  # 返回回复内容而不是直接发送
+            else:
+                return None
                 
         except Exception as e:
-            logger.error(f"发送智能回复失败: {e}")
+            logger.error(f"生成智能回复失败: {e}")
+            return None
 
     async def get_response_statistics(self, group_id: str) -> Dict[str, Any]:
         """获取回复统计"""

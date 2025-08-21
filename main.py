@@ -65,20 +65,13 @@ class SelfLearningPlugin(star.Star):
         # 初始化服务层
         self._initialize_services()
 
-        # 初始化 Web 服务器
+        # 初始化 Web 服务器（但不启动，等待 on_load）
         global server_instance
         if self.plugin_config.enable_web_interface:
             server_instance = Server(port=self.plugin_config.web_interface_port)
             if server_instance:
                 logger.info(StatusMessages.WEB_INTERFACE_ENABLED.format(host=server_instance.host, port=server_instance.port))
-                # 直接启动服务器而不是等待 on_load
-                try:
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    loop.create_task(self._start_web_server())
-                    logger.info(StatusMessages.WEB_SERVER_TASK_CREATED)
-                except Exception as e:
-                    logger.error(StatusMessages.WEB_SERVER_START_FAILED.format(error=e), exc_info=True)
+                logger.info("Web服务器实例已创建，将在on_load中启动")
             else:
                 logger.error(StatusMessages.WEB_INTERFACE_INIT_FAILED)
         else:
@@ -118,7 +111,7 @@ class SelfLearningPlugin(star.Star):
             self.style_analyzer = self.service_factory.create_style_analyzer()
             self.quality_monitor = self.service_factory.create_quality_monitor()
             self.progressive_learning = self.service_factory.create_progressive_learning()
-            self.intelligent_responder = self.service_factory.create_intelligent_responder()
+            self.intelligent_responder = self.service_factory.create_intelligent_responder()  # 重新启用智能回复器
             self.ml_analyzer = self.service_factory.create_ml_analyzer()
             self.persona_manager = self.service_factory.create_persona_manager()
             
@@ -136,14 +129,6 @@ class SelfLearningPlugin(star.Star):
             # 初始化内部组件
             self._setup_internal_components()
 
-            # 将服务实例传递给 Web 服务器模块
-            if self.plugin_config.enable_web_interface and server_instance:
-                set_plugin_services(
-                    self.plugin_config,
-                    self.factory_manager, # 传递 factory_manager
-                    self.service_factory.create_llm_client() # 传递 LLMClient 实例
-                )
-            
             logger.info(StatusMessages.FACTORY_SERVICES_INIT_COMPLETE)
             
         except SelfLearningError as sle:
@@ -175,34 +160,18 @@ class SelfLearningPlugin(star.Star):
         # 学习调度器
         self.learning_scheduler = self.component_factory.create_learning_scheduler(self)
         
-        # 异步任务管理
+        # 异步任务管理 - 增强后台任务管理
         self.background_tasks = set()
+        self.learning_tasks = {}  # 按group_id管理学习任务
         
-        # 启动异步任务并追踪
-        # 延迟启动学习服务，并传递 group_id
-        # 注意：这里需要一个 group_id 来启动学习，对于插件初始化，可以考虑一个默认的全局 group_id
-        # 或者在实际消息处理时才启动针对特定 group_id 的学习
-        # 暂时不在这里启动全局学习，而是通过命令或消息触发
-        # task = asyncio.create_task(self._delayed_start_learning())
-        # self.background_tasks.add(task)
-        # task.add_done_callback(self.background_tasks.discard) # 任务完成后从集合中移除
+        # 启动自动学习（如果启用）
+        if self.plugin_config.enable_auto_learning:
+            # 延迟启动，避免在初始化时启动大量任务
+            asyncio.create_task(self._delayed_auto_start_learning())
     
     async def on_load(self):
         """插件加载时启动 Web 服务器和数据库管理器"""
         logger.info(StatusMessages.ON_LOAD_START)
-        global server_instance
-        if self.plugin_config.enable_web_interface and server_instance:
-            logger.info(StatusMessages.WEB_SERVER_PREPARE.format(host=server_instance.host, port=server_instance.port))
-            try:
-                await server_instance.start()
-                logger.info(StatusMessages.PLUGIN_LOAD_COMPLETE)
-            except Exception as e:
-                logger.error(StatusMessages.WEB_SERVER_START_FAILED.format(error=e), exc_info=True)
-        else:
-            if not self.plugin_config.enable_web_interface:
-                logger.info(StatusMessages.WEB_INTERFACE_DISABLED_SKIP)
-            if not server_instance:
-                logger.error(StatusMessages.SERVER_INSTANCE_NULL)
         
         # 启动数据库管理器，确保数据库表被创建
         try:
@@ -210,6 +179,33 @@ class SelfLearningPlugin(star.Star):
             logger.info(StatusMessages.DB_MANAGER_STARTED)
         except Exception as e:
             logger.error(StatusMessages.DB_MANAGER_START_FAILED.format(error=e), exc_info=True)
+        
+        # 设置Web服务器的插件服务实例和启动Web服务器
+        global server_instance
+        if self.plugin_config.enable_web_interface and server_instance:
+            # 设置插件服务
+            try:
+                await set_plugin_services(
+                    self.plugin_config,
+                    self.factory_manager, # 传递 factory_manager
+                    self.service_factory.create_llm_client() # 传递 LLMClient 实例
+                )
+                logger.info("Web服务器插件服务设置完成")
+            except Exception as e:
+                logger.error(f"设置Web服务器插件服务失败: {e}", exc_info=True)
+            
+            # 启动Web服务器
+            logger.info(StatusMessages.WEB_SERVER_PREPARE.format(host=server_instance.host, port=server_instance.port))
+            try:
+                await server_instance.start()
+                logger.info(StatusMessages.WEB_SERVER_STARTED)
+            except Exception as e:
+                logger.error(StatusMessages.WEB_SERVER_START_FAILED.format(error=e), exc_info=True)
+        else:
+            if not self.plugin_config.enable_web_interface:
+                logger.info(StatusMessages.WEB_INTERFACE_DISABLED_SKIP)
+            if not server_instance:
+                logger.error(StatusMessages.SERVER_INSTANCE_NULL)
         
         logger.info(StatusMessages.PLUGIN_LOAD_COMPLETE)
 
@@ -279,9 +275,116 @@ class SelfLearningPlugin(star.Star):
             # 如果启用实时学习，立即进行筛选
             if self.plugin_config.enable_realtime_learning:
                 await self._process_message_realtime(group_id, message_text, sender_id)
-                
+            
+            # 智能启动学习任务（基于消息活动）
+            await self._smart_start_learning_for_group(group_id)
+            
+            # 智能回复处理 - 在所有数据处理完成后
+            try:
+                intelligent_reply = await self.intelligent_responder.send_intelligent_response(event)
+                if intelligent_reply:
+                    # 使用yield发送智能回复
+                    yield event.plain_result(intelligent_reply)
+                    logger.info(f"已发送智能回复: {intelligent_reply[:50]}...")
+            except Exception as e:
+                logger.error(f"智能回复处理失败: {e}", exc_info=True)
+            
         except Exception as e:
             logger.error(StatusMessages.MESSAGE_COLLECTION_ERROR.format(error=e), exc_info=True)
+
+    async def _smart_start_learning_for_group(self, group_id: str):
+        """智能启动群组学习任务 - 不阻塞主线程"""
+        try:
+            # 检查该群组是否已有学习任务
+            if group_id in self.learning_tasks:
+                return
+            
+            # 检查群组消息数量是否达到学习阈值
+            stats = await self.message_collector.get_statistics(group_id)
+            if stats.get('total_messages', 0) < self.plugin_config.min_messages_for_learning:
+                return
+            
+            # 创建学习任务
+            learning_task = asyncio.create_task(self._start_group_learning(group_id))
+            
+            # 设置完成回调
+            def on_learning_task_complete(task):
+                if group_id in self.learning_tasks:
+                    del self.learning_tasks[group_id]
+                if task.exception():
+                    logger.error(f"群组 {group_id} 学习任务异常: {task.exception()}")
+                else:
+                    logger.info(f"群组 {group_id} 学习任务完成")
+            
+            learning_task.add_done_callback(on_learning_task_complete)
+            self.learning_tasks[group_id] = learning_task
+            
+            logger.info(f"为群组 {group_id} 启动了智能学习任务")
+            
+        except Exception as e:
+            logger.error(f"智能启动学习失败: {e}")
+
+    async def _start_group_learning(self, group_id: str):
+        """启动特定群组的学习任务"""
+        try:
+            success = await self.progressive_learning.start_learning(group_id)
+            if success:
+                logger.info(f"群组 {group_id} 学习任务启动成功")
+            else:
+                logger.warning(f"群组 {group_id} 学习任务启动失败")
+        except Exception as e:
+            logger.error(f"群组 {group_id} 学习任务启动异常: {e}")
+
+    async def _delayed_auto_start_learning(self):
+        """延迟自动启动学习 - 避免初始化时阻塞"""
+        try:
+            # 等待系统初始化完成
+            await asyncio.sleep(30)
+            
+            # 获取活跃群组列表
+            active_groups = await self._get_active_groups()
+            
+            for group_id in active_groups:
+                try:
+                    await self._smart_start_learning_for_group(group_id)
+                    # 避免同时启动过多任务
+                    await asyncio.sleep(5)
+                except Exception as e:
+                    logger.error(f"延迟启动群组 {group_id} 学习失败: {e}")
+                    
+        except Exception as e:
+            logger.error(f"延迟自动启动学习失败: {e}")
+
+    async def _get_active_groups(self) -> List[str]:
+        """获取活跃群组列表"""
+        try:
+            # 获取最近有消息的群组
+            conn = await self.db_manager._get_messages_db_connection()
+            cursor = await conn.cursor()
+            
+            # 获取最近24小时内有消息的群组
+            cutoff_time = time.time() - 86400
+            await cursor.execute('''
+                SELECT DISTINCT group_id, COUNT(*) as msg_count
+                FROM raw_messages 
+                WHERE timestamp > ? AND group_id IS NOT NULL
+                GROUP BY group_id
+                HAVING msg_count >= ?
+                ORDER BY msg_count DESC
+                LIMIT 10
+            ''', (cutoff_time, self.plugin_config.min_messages_for_learning))
+            
+            active_groups = []
+            for row in await cursor.fetchall():
+                if row[0]:  # 确保group_id不为空
+                    active_groups.append(row[0])
+                    
+            logger.info(f"发现 {len(active_groups)} 个活跃群组")
+            return active_groups
+            
+        except Exception as e:
+            logger.error(f"获取活跃群组失败: {e}")
+            return []
 
     async def _process_message_realtime(self, group_id: str, message_text: str, sender_id: str):
         """实时处理消息"""
@@ -289,20 +392,8 @@ class SelfLearningPlugin(star.Star):
             # 使用弱模型筛选消息
             current_persona_description = await self.persona_manager.get_current_persona_description()
             
-            # 检查是否需要智能回复
-            if self.plugin_config.enable_intelligent_reply:
-                should_reply = await self.intelligent_responder.should_respond(
-                    group_id, sender_id, message_text
-                )
-                if should_reply:
-                    # 获取好感度影响的系统提示词
-                    if self.plugin_config.enable_affection_system:
-                        base_prompt = current_persona_description or None
-                        enhanced_prompt = await self.affection_manager.get_mood_influenced_system_prompt(
-                            group_id, base_prompt
-                        )
-                        # 这里可以触发智能回复，但需要根据AstrBot的架构来实现
-                        logger.info(LogMessages.INTELLIGENT_REPLY_DETECTED.format(prompt_preview=enhanced_prompt[:100]))
+            # 删除了智能回复相关处理
+            # 原智能回复功能已移除
             
             if await self.multidimensional_analyzer.filter_message_with_llm(message_text, current_persona_description):
                 await self.message_collector.add_filtered_message({
@@ -847,45 +938,98 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result(f"❌ 清理重复内容失败: {str(e)}")
 
     async def terminate(self):
-        """插件卸载时的清理工作"""
+        """插件卸载时的清理工作 - 增强后台任务管理"""
         try:
-            # 停止学习调度器
-            if hasattr(self, 'learning_scheduler'):
-                await self.learning_scheduler.stop()
-                
-            # 取消所有后台任务
-            for task in list(self.background_tasks): # 使用 list() 避免在迭代时修改集合
-                task.cancel()
+            logger.info("开始插件清理工作...")
+            
+            # 1. 停止所有学习任务
+            logger.info("停止所有学习任务...")
+            for group_id, task in list(self.learning_tasks.items()):
                 try:
-                    await task
-                except asyncio.CancelledError:
-                    pass # 任务已被取消，这是预期行为
+                    # 先停止学习流程
+                    await self.progressive_learning.stop_learning()
+                    
+                    # 取消学习任务
+                    if not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                    
+                    logger.info(f"群组 {group_id} 学习任务已停止")
                 except Exception as e:
-                    logger.error(LogMessages.BACKGROUND_TASK_CANCEL_ERROR.format(error=e), exc_info=True)
+                    logger.error(f"停止群组 {group_id} 学习任务失败: {e}")
             
-            # 停止所有服务
+            self.learning_tasks.clear()
+            
+            # 2. 停止学习调度器
+            if hasattr(self, 'learning_scheduler'):
+                try:
+                    await self.learning_scheduler.stop()
+                    logger.info("学习调度器已停止")
+                except Exception as e:
+                    logger.error(f"停止学习调度器失败: {e}")
+                
+            # 3. 取消所有后台任务
+            logger.info("取消所有后台任务...")
+            for task in list(self.background_tasks):
+                try:
+                    if not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                except Exception as e:
+                    logger.error(LogMessages.BACKGROUND_TASK_CANCEL_ERROR.format(error=e))
+            
+            self.background_tasks.clear()
+            
+            # 4. 停止所有服务
+            logger.info("停止所有服务...")
             if hasattr(self, 'factory_manager'):
-                await self.factory_manager.cleanup()
+                try:
+                    await self.factory_manager.cleanup()
+                    logger.info("服务工厂已清理")
+                except Exception as e:
+                    logger.error(f"清理服务工厂失败: {e}")
             
-            # 清理临时人格
+            # 5. 清理临时人格
             if hasattr(self, 'temporary_persona_updater'):
-                await self.temporary_persona_updater.cleanup_temp_personas()
+                try:
+                    await self.temporary_persona_updater.cleanup_temp_personas()
+                    logger.info("临时人格已清理")
+                except Exception as e:
+                    logger.error(f"清理临时人格失败: {e}")
                 
-            # 保存最终状态
+            # 6. 保存最终状态
             if hasattr(self, 'message_collector'):
-                await self.message_collector.save_state()
+                try:
+                    await self.message_collector.save_state()
+                    logger.info("消息收集器状态已保存")
+                except Exception as e:
+                    logger.error(f"保存消息收集器状态失败: {e}")
                 
-            # 停止 Web 服务器
+            # 7. 停止 Web 服务器
             global server_instance
             if server_instance:
-                await server_instance.stop()
+                try:
+                    await server_instance.stop()
+                    logger.info("Web服务器已停止")
+                except Exception as e:
+                    logger.error(f"停止Web服务器失败: {e}")
                 
-            # 保存配置到文件
-            with open(os.path.join(self.plugin_config.data_dir, 'config.json'), 'w', encoding='utf-8') as f:
-                json.dump(self.plugin_config.to_dict(), f, ensure_ascii=False, indent=2)
-            logger.info(LogMessages.PLUGIN_CONFIG_SAVED)
+            # 8. 保存配置到文件
+            try:
+                config_path = os.path.join(self.plugin_config.data_dir, 'config.json')
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.plugin_config.to_dict(), f, ensure_ascii=False, indent=2)
+                logger.info(LogMessages.PLUGIN_CONFIG_SAVED)
+            except Exception as e:
+                logger.error(f"保存配置失败: {e}")
             
             logger.info(LogMessages.PLUGIN_UNLOAD_SUCCESS)
             
-        except Exception as e: # Consider more specific exceptions if possible
+        except Exception as e:
             logger.error(LogMessages.PLUGIN_UNLOAD_CLEANUP_FAILED.format(error=e), exc_info=True)

@@ -357,3 +357,134 @@ PROGRESSIVE_LEARNING_GENERATE_UPDATED_PERSONA_PROMPT = """
     "mood_imitation_dialogs": ["情绪模拟对话列表"]
 }}
 """
+
+# 新增强化模型专用提示词
+REINFORCEMENT_LEARNING_MEMORY_REPLAY_PROMPT = """
+你是一个强化学习专家，负责通过记忆重放机制来优化人格学习效果。
+
+历史学习数据：
+{historical_learning_data}
+
+新的学习数据：
+{new_learning_data}
+
+当前人格状态：
+{current_persona}
+
+请执行记忆重放分析：
+1. 分析历史数据中的成功学习模式
+2. 识别新数据与历史数据的关联性
+3. 评估学习策略的有效性
+4. 提供优化建议
+
+请以JSON格式返回强化学习分析结果：
+{{
+    "replay_analysis": {{
+        "historical_patterns": ["识别到的历史学习模式"],
+        "correlation_strength": 0.0,
+        "learning_effectiveness": 0.0
+    }},
+    "optimization_strategy": {{
+        "priority_features": ["需要重点学习的特征"],
+        "learning_weight": 0.0,
+        "confidence_threshold": 0.0
+    }},
+    "reinforcement_feedback": {{
+        "positive_signals": ["积极的学习信号"],
+        "negative_signals": ["需要调整的方面"],
+        "reward_score": 0.0
+    }},
+    "next_action": "建议的下一步行动"
+}}
+"""
+
+REINFORCEMENT_LEARNING_INCREMENTAL_TUNING_PROMPT = """
+你是一个增量学习专家，负责将新的人格特征与现有人格进行智能融合。
+
+基础人格：
+{base_persona}
+
+增量更新数据：
+{incremental_updates}
+
+融合历史：
+{fusion_history}
+
+请执行增量微调分析：
+1. 评估新特征与基础人格的兼容性
+2. 计算最优的融合比例
+3. 预测融合后的人格表现
+4. 提供风险控制建议
+
+请以JSON格式返回增量微调结果：
+{{
+    "compatibility_analysis": {{
+        "feature_compatibility": 0.0,
+        "style_consistency": 0.0,
+        "personality_coherence": 0.0
+    }},
+    "fusion_strategy": {{
+        "base_weight": 0.0,
+        "increment_weight": 0.0,
+        "fusion_method": "fusion_method_name",
+        "adaptation_rate": 0.0
+    }},
+    "performance_prediction": {{
+        "expected_improvement": 0.0,
+        "potential_risks": ["风险评估列表"],
+        "confidence_level": 0.0
+    }},
+    "updated_persona": {{
+        "name": "融合后的人格名称",
+        "prompt": "融合后的完整人格描述",
+        "key_changes": ["主要变化说明"]
+    }}
+}}
+"""
+
+REINFORCEMENT_LEARNING_STRATEGY_OPTIMIZATION_PROMPT = """
+你是一个学习策略优化专家，负责根据历史表现数据动态调整学习策略。
+
+学习历史数据：
+{learning_history}
+
+当前策略参数：
+{current_strategy}
+
+性能指标：
+{performance_metrics}
+
+请执行策略优化分析：
+1. 分析当前策略的优势和不足
+2. 识别最有效的学习模式
+3. 提出参数调优建议
+4. 预测优化后的效果
+
+请以JSON格式返回策略优化结果：
+{{
+    "strategy_analysis": {{
+        "current_effectiveness": 0.0,
+        "bottleneck_factors": ["限制因素"],
+        "success_patterns": ["成功模式"]
+    }},
+    "optimization_recommendations": {{
+        "learning_rate_adjustment": 0.0,
+        "batch_size_optimization": 0,
+        "threshold_tuning": {{
+            "confidence_threshold": 0.0,
+            "quality_threshold": 0.0,
+            "relevance_threshold": 0.0
+        }}
+    }},
+    "expected_improvements": {{
+        "learning_speed": 0.0,
+        "quality_enhancement": 0.0,
+        "stability_improvement": 0.0
+    }},
+    "implementation_plan": {{
+        "immediate_actions": ["立即执行的优化"],
+        "gradual_adjustments": ["渐进式调整"],
+        "monitoring_metrics": ["需要监控的指标"]
+    }}
+}}
+"""

@@ -14,6 +14,7 @@ from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError, ModelAccessError
 from ..core.llm_client import LLMClient # 导入 LLMClient
 from .database_manager import DatabaseManager # 导入 DatabaseManager
+from ..utils.json_utils import safe_parse_llm_json
 
 
 @dataclass
@@ -128,10 +129,17 @@ class StyleAnalyzerService:
             )
             
             if response and response.text():
-                try:
-                    analysis = json.loads(response.text().strip())
+                # 使用安全的JSON解析
+                default_analysis = {
+                    "error": "JSON解析失败",
+                    "raw_response": "响应解析失败"
+                }
+                
+                analysis = safe_parse_llm_json(response.text(), fallback_result=default_analysis)
+                
+                if analysis and not analysis.get("error"):
                     return analysis
-                except json.JSONDecodeError:
+                else:
                     return {"error": "JSON解析失败", "raw_response": response.text()}
             return {"error": "LLM响应为空"}
                 
@@ -154,11 +162,18 @@ class StyleAnalyzerService:
             )
             
             if response and response.text():
-                try:
-                    scores = json.loads(response.text().strip())
-                    return StyleProfile(**scores)
-                except (json.JSONDecodeError, TypeError):
-                    # 返回默认值
+                # 使用安全的JSON解析
+                default_scores = StyleProfile()
+                
+                scores_dict = safe_parse_llm_json(response.text(), fallback_result=default_scores.__dict__)
+                
+                if scores_dict and isinstance(scores_dict, dict):
+                    try:
+                        return StyleProfile(**scores_dict)
+                    except TypeError:
+                        # 返回默认值
+                        return StyleProfile()
+                else:
                     return StyleProfile()
             return StyleProfile() # LLM响应为空，返回默认值
                 
@@ -281,13 +296,29 @@ class StyleAnalyzerService:
             )
             
             if response and response.text():
-                try:
-                    recommendations = json.loads(response.text().strip())
+                # 使用安全的JSON解析
+                default_recommendations = {
+                    "error": "建议解析失败",
+                    "raw_response": "响应解析失败"
+                }
+                
+                recommendations = safe_parse_llm_json(response.text(), fallback_result=default_recommendations)
+                
+                if recommendations and not recommendations.get("error"):
                     return recommendations
-                except json.JSONDecodeError:
+                else:
                     return {"error": "建议解析失败", "raw_response": response.text()}
             return {"error": "LLM响应为空"}
                 
         except Exception as e:
             logger.error(f"风格建议生成失败: {e}")
             return {"error": str(e)}
+
+    async def stop(self):
+        """停止服务"""
+        try:
+            logger.info("风格分析服务已停止")
+            return True
+        except Exception as e:
+            logger.error(f"停止风格分析服务失败: {e}")
+            return False

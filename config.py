@@ -31,11 +31,12 @@ class PluginConfig:
     refine_provider_id: Optional[str] = None  # 提炼模型使用的提供商ID
     reinforce_provider_id: Optional[str] = None # 强化模型使用的提供商ID
 
-    filter_api_url: Optional[str] = None # 筛选模型API URL
+    # API配置 - 支持DeepSeek等OpenAI兼容接口
+    filter_api_url: Optional[str] = None # 筛选模型API URL (如: https://api.deepseek.com)
     filter_api_key: Optional[str] = None # 筛选模型API Key
-    refine_api_url: Optional[str] = None # 提炼模型API URL
+    refine_api_url: Optional[str] = None # 提炼模型API URL (如: https://api.deepseek.com)
     refine_api_key: Optional[str] = None # 提炼模型API Key
-    reinforce_api_url: Optional[str] = None # 强化模型API URL
+    reinforce_api_url: Optional[str] = None # 强化模型API URL (如: https://api.deepseek.com)
     reinforce_api_key: Optional[str] = None # 强化模型API Key
     
     # 当前人格设置
@@ -63,13 +64,6 @@ class PluginConfig:
     enable_ml_analysis: bool = True          # 启用ML分析
     max_ml_sample_size: int = 100           # ML样本最大数量
     ml_cache_timeout_hours: int = 1         # ML缓存超时
-    
-    # 智能回复设置
-    enable_intelligent_reply: bool = False   # 启用智能回复
-    context_window_size: int = 5            # 上下文窗口大小
-    intelligent_reply_keywords: List[str] = field(default_factory=lambda: ['bot', 'ai', '人工智能', '机器人', '助手']) # 智能回复关键词
-    intelligent_responder_system_prompt: Optional[str] = None # 智能回复系统提示
-    intelligent_responder_temperature: float = 0.7 # 智能回复温度
     
     # 人格备份设置
     auto_backup_enabled: bool = True        # 启用自动备份
@@ -124,7 +118,8 @@ class PluginConfig:
         style_analysis = config.get('Style_Analysis', {})
         advanced_settings = config.get('Advanced_Settings', {})
         ml_settings = config.get('Machine_Learning_Settings', {})
-        intelligent_reply_settings = config.get('Intelligent_Reply_Settings', {})
+        # 删除智能回复设置的获取
+        # intelligent_reply_settings = config.get('Intelligent_Reply_Settings', {})
         persona_backup_settings = config.get('Persona_Backup_Settings', {})
         
         return cls(
@@ -171,11 +166,7 @@ class PluginConfig:
             max_ml_sample_size=ml_settings.get('max_ml_sample_size', 100),
             ml_cache_timeout_hours=ml_settings.get('ml_cache_timeout_hours', 1),
             
-            enable_intelligent_reply=intelligent_reply_settings.get('enable_intelligent_reply', False),
-            context_window_size=intelligent_reply_settings.get('context_window_size', 5),
-            intelligent_reply_keywords=intelligent_reply_settings.get('intelligent_reply_keywords', []),
-            intelligent_responder_system_prompt=intelligent_reply_settings.get('intelligent_responder_system_prompt', None),
-            intelligent_responder_temperature=intelligent_reply_settings.get('intelligent_responder_temperature', 0.7),
+            # 删除了智能回复相关配置
             
             auto_backup_enabled=persona_backup_settings.get('auto_backup_enabled', True),
             backup_interval_hours=persona_backup_settings.get('backup_interval_hours', 24),

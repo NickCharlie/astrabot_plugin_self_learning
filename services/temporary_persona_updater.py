@@ -1,0 +1,906 @@
+"""
+临时人格更新器 - 实现安全的临时人格学习和更新
+"""
+import os
+import json
+import time
+import asyncio
+from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime, timedelta
+
+from astrbot.api import logger
+from astrbot.api.star import Context
+
+from ..config import PluginConfig
+from ..core.interfaces import IPersonaUpdater, IPersonaBackupManager
+from ..core.llm_client import LLMClient
+from ..services.database_manager import DatabaseManager
+from ..statics.temp_persona_messages import TemporaryPersonaMessages
+from ..statics.prompts import MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT
+from ..exceptions import SelfLearningError
+
+
+class TemporaryPersonaUpdater:
+    """
+    临时人格更新器
+    功能：
+    1. 严格的人格备份管理（人格名_时间.txt格式）
+    2. 临时人格应用和过期管理
+    3. 基于新特征和对话的临时学习
+    4. 安全的恢复机制
+    """
+    
+    def __init__(self, 
+                 config: PluginConfig, 
+                 context: Context,
+                 persona_updater: IPersonaUpdater,
+                 backup_manager: IPersonaBackupManager,
+                 llm_client: LLMClient,
+                 db_manager: DatabaseManager):
+        self.config = config
+        self.context = context
+        self.persona_updater = persona_updater
+        self.backup_manager = backup_manager
+        self.llm_client = llm_client
+        self.db_manager = db_manager
+        
+        # 临时人格存储
+        self.active_temp_personas: Dict[str, Dict] = {}  # group_id -> temp_persona_info
+        self.expiry_tasks: Dict[str, asyncio.Task] = {}  # group_id -> expiry_task
+        
+        # 备份目录设置
+        self.backup_base_dir = os.path.join(config.data_dir, "persona_backups")
+        self._ensure_backup_directory()
+        
+        # 人格更新文件路径
+        self.persona_updates_file = os.path.join(config.data_dir, "persona_updates.txt")
+        
+        logger.info("临时人格更新器初始化完成")
+    
+    def _ensure_backup_directory(self):
+        """确保备份目录存在"""
+        try:
+            os.makedirs(self.backup_base_dir, exist_ok=True)
+        except Exception as e:
+            logger.error(TemporaryPersonaMessages.ERROR_BACKUP_DIRECTORY_CREATE.format(error=e))
+            raise SelfLearningError(f"创建备份目录失败: {e}")
+    
+    async def create_strict_persona_backup(self, group_id: str, reason: str = "临时更新前备份") -> str:
+        """
+        创建严格的人格备份（人格名_时间.txt格式）
+        """
+        try:
+            # 获取当前人格信息
+            current_persona = await self.persona_updater.get_current_persona(group_id)
+            if not current_persona:
+                raise SelfLearningError(TemporaryPersonaMessages.ERROR_NO_ORIGINAL_PERSONA)
+            
+            # 生成备份文件名：人格名_时间
+            persona_name = current_persona.get('name', '默认人格').replace(' ', '_')
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f"{persona_name}_{timestamp}.txt"
+            
+            # 创建群组备份目录
+            group_backup_dir = os.path.join(self.backup_base_dir, f"group_{group_id}")
+            os.makedirs(group_backup_dir, exist_ok=True)
+            
+            backup_file_path = os.path.join(group_backup_dir, backup_filename)
+            
+            # 准备备份数据
+            backup_data = {
+                "backup_info": {
+                    "persona_name": current_persona.get('name', '默认人格'),
+                    "backup_time": datetime.now().isoformat(),
+                    "backup_reason": reason,
+                    "group_id": group_id
+                },
+                "persona_data": {
+                    "name": current_persona.get('name', ''),
+                    "prompt": current_persona.get('prompt', ''),
+                    "settings": current_persona.get('settings', {}),
+                    "mood_imitation_dialogs": current_persona.get('mood_imitation_dialogs', []),
+                    "style_attributes": current_persona.get('style_attributes', {})
+                },
+                "metadata": {
+                    "backup_version": "1.0",
+                    "plugin_version": "1.0.0"
+                }
+            }
+            
+            # 写入备份文件（txt格式，JSON内容）
+            with open(backup_file_path, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            
+            # 同时在数据库中记录备份
+            await self.backup_manager.create_backup_before_update(group_id, reason)
+            
+            logger.info(TemporaryPersonaMessages.LOG_BACKUP_CREATED.format(
+                group_id=group_id,
+                backup_name=backup_filename
+            ))
+            
+            return backup_file_path
+            
+        except Exception as e:
+            logger.error(TemporaryPersonaMessages.BACKUP_FAILED.format(error=e))
+            raise SelfLearningError(f"创建人格备份失败: {e}")
+    
+    async def apply_temporary_persona_update(self, 
+                                           group_id: str, 
+                                           new_features: List[str],
+                                           example_dialogs: List[str],
+                                           duration_minutes: int = 60) -> bool:
+        """
+        应用临时人格更新
+        
+        Args:
+            group_id: 群组ID
+            new_features: 新的特征字符串列表
+            example_dialogs: 需要模仿的对话列表
+            duration_minutes: 临时人格持续时间（分钟）
+        
+        Returns:
+            bool: 是否应用成功
+        """
+        try:
+            # 检查是否已有活动的临时人格
+            if group_id in self.active_temp_personas:
+                raise SelfLearningError(TemporaryPersonaMessages.ERROR_TEMP_PERSONA_CONFLICT)
+            
+            # 创建严格备份
+            backup_path = await self.create_strict_persona_backup(group_id, "临时人格更新前备份")
+            
+            # 获取当前人格
+            original_persona = await self.persona_updater.get_current_persona(group_id)
+            
+            # 创建临时增强人格
+            temp_persona = await self._create_enhanced_persona(
+                original_persona, new_features, example_dialogs
+            )
+            
+            # 应用临时人格到系统
+            success = await self._apply_persona_to_system(group_id, temp_persona)
+            if not success:
+                raise SelfLearningError("应用临时人格到系统失败")
+            
+            # 记录临时人格信息
+            expiry_time = time.time() + (duration_minutes * 60)
+            temp_persona_info = {
+                'original_persona': original_persona,
+                'temp_persona': temp_persona,
+                'backup_path': backup_path,
+                'start_time': time.time(),
+                'expiry_time': expiry_time,
+                'duration_minutes': duration_minutes,
+                'new_features': new_features,
+                'example_dialogs': example_dialogs
+            }
+            
+            self.active_temp_personas[group_id] = temp_persona_info
+            
+            # 设置过期任务
+            expiry_task = asyncio.create_task(
+                self._schedule_temp_persona_expiry(group_id, duration_minutes * 60)
+            )
+            self.expiry_tasks[group_id] = expiry_task
+            
+            logger.info(TemporaryPersonaMessages.LOG_TEMP_PERSONA_STARTED.format(
+                group_id=group_id,
+                persona_name=temp_persona.get('name', '临时人格')
+            ))
+            
+            return True
+            
+        except Exception as e:
+            logger.error(TemporaryPersonaMessages.TEMP_PERSONA_CREATE_FAILED.format(error=e))
+            return False
+    
+    async def _create_enhanced_persona(self, 
+                                     original_persona: Dict[str, Any],
+                                     new_features: List[str],
+                                     example_dialogs: List[str]) -> Dict[str, Any]:
+        """
+        基于原始人格创建增强的临时人格
+        """
+        # 复制原始人格
+        enhanced_persona = original_persona.copy()
+        
+        # 增强prompt
+        original_prompt = original_persona.get('prompt', '')
+        feature_enhancement = self._build_feature_enhancement(new_features)
+        
+        enhanced_prompt = f'{original_prompt}\n\n【临时特征增强】\n{feature_enhancement}\n\n【参考对话风格】\n请参考以下对话风格进行回应：'
+        
+        # 添加对话示例
+        if example_dialogs:
+            dialog_examples = ['\n\".join([f\"- {dialog}' for dialog in example_dialogs[:5]]  # 限制数量
+            enhanced_prompt += f'{dialog_examples}'
+        
+        enhanced_persona.update({
+            'name': f"{original_persona.get('name', '默认人格')}_临时增强",
+            'prompt': enhanced_prompt,
+            'mood_imitation_dialogs': (
+                original_persona.get('mood_imitation_dialogs', []) + example_dialogs
+            )[-20:],  # 保留最新20条
+            'temp_features': new_features,
+            'temp_created_at': datetime.now().isoformat()
+            })
+        
+        return enhanced_persona
+    
+    def _build_feature_enhancement(self, features: List[str]) -> str:
+        """构建特征增强文本"""
+        if not features:
+            return '"\"'
+        
+        enhancement_parts = []
+        for i, feature in enumerate(features, 1):
+            enhancement_parts.append(f"{i}. {feature}")
+        
+        return "\n".join(enhancement_parts)
+    
+    async def _apply_persona_to_system(self, group_id: str, persona: Dict[str, Any]) -> bool:
+        """将人格应用到系统中 - 通过增强system prompt而不是替换整个人格"""
+        try:
+            logger.info(f"尝试将增量人格更新应用到群组 {group_id} 的系统中")
+            logger.info(f"增强人格名称: {persona.get('name', '未知')}")
+            
+            # 获取provider并更新prompt
+            provider = self.context.get_using_provider()
+            if not provider:
+                logger.warning("无法获取provider")
+                return False
+            
+            # 检查是否有当前人格
+            if not hasattr(provider, 'curr_personality'):
+                logger.error("Provider没有curr_personality属性")
+                return False
+            
+            if not provider.curr_personality:
+                logger.warning("当前没有设置人格，将创建新的人格")
+                # 创建基础人格
+                provider.curr_personality = {
+                    'name': persona.get('name', '默认人格'),
+                    'prompt': persona.get('prompt', ''),
+                    'begin_dialogs': [],
+                    'mood_imitation_dialogs': []
+                }
+                logger.info(f"创建了新的基础人格并应用增量更新")
+                return True
+            
+            # 获取原有的基础prompt
+            original_prompt = provider.curr_personality.get('prompt', '')
+            logger.info(f"原有prompt长度: {len(original_prompt)}")
+            
+            # 从增强的persona中提取增量更新部分
+            enhanced_prompt = persona.get('prompt', '')
+            
+            # 查找增量更新标记
+            update_marker = "【增量更新 -"
+            if update_marker in enhanced_prompt:
+                # 提取增量更新部分
+                update_start = enhanced_prompt.find(update_marker)
+                if update_start != -1:
+                    incremental_update = enhanced_prompt[update_start:]
+                    logger.info(f"提取到增量更新内容: {incremental_update[:100]}...")
+                    
+                    # 检查原有prompt是否已包含此更新
+                    if incremental_update not in original_prompt:
+                        # 将增量更新附加到原有prompt后面
+                        updated_prompt = original_prompt + incremental_update
+                        provider.curr_personality['prompt'] = updated_prompt
+                        
+                        logger.info(f"成功将增量更新附加到system prompt")
+                        logger.info(f"更新后prompt长度: {len(updated_prompt)}")
+                        
+                        return True
+                    else:
+                        logger.info("增量更新已存在于当前prompt中，跳过重复更新")
+                        return True
+                else:
+                    logger.warning("未找到增量更新标记的开始位置")
+            else:
+                # 如果没有找到增量更新标记，直接使用整个增强的prompt
+                logger.info("未找到增量更新标记，使用整个增强的prompt")
+                provider.curr_personality['prompt'] = enhanced_prompt
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logger.error(f"应用人格到系统失败: {e}")
+            return False
+    
+    async def _schedule_temp_persona_expiry(self, group_id: str, duration_seconds: float):
+        """调度临时人格过期"""
+        try:
+            await asyncio.sleep(duration_seconds)
+            await self.remove_temporary_persona(group_id, reason="自动过期")
+        except asyncio.CancelledError:
+            logger.info(f"临时人格过期任务被取消: {group_id}")
+        except Exception as e:
+            logger.error(f"临时人格过期处理失败: {e}")
+    
+    async def remove_temporary_persona(self, group_id: str, reason: str = "手动移除") -> bool:
+        """
+        移除临时人格，恢复原始人格
+        """
+        try:
+            if group_id not in self.active_temp_personas:
+                return False
+            
+            temp_info = self.active_temp_personas[group_id]
+            original_persona = temp_info['original_persona']
+            
+            # 恢复原始人格
+            success = await self._apply_persona_to_system(group_id, original_persona)
+            
+            if success:
+                # 清理临时人格记录
+                del self.active_temp_personas[group_id]
+                
+                # 取消过期任务
+                if group_id in self.expiry_tasks:
+                    self.expiry_tasks[group_id].cancel()
+                    del self.expiry_tasks[group_id]
+                
+                logger.info(TemporaryPersonaMessages.LOG_TEMP_PERSONA_EXPIRED.format(
+                    group_id=group_id,
+                    persona_name=temp_info['temp_persona'].get('name', '临时人格')
+                ))
+                
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"移除临时人格失败: {e}")
+            return False
+    
+    async def get_temporary_persona_status(self, group_id: str) -> Optional[Dict[str, Any]]:
+        """获取临时人格状态"""
+        if group_id not in self.active_temp_personas:
+            return None
+        
+        temp_info = self.active_temp_personas[group_id]
+        current_time = time.time()
+        
+        return {
+            'active': True,
+            'persona_name': temp_info['temp_persona'].get('name', ''),
+            'start_time': temp_info['start_time'],
+            'expiry_time': temp_info['expiry_time'],
+            'remaining_seconds': max(0, temp_info['expiry_time'] - current_time),
+            'duration_minutes': temp_info['duration_minutes'],
+            'features_count': len(temp_info['new_features']),
+            'dialogs_count': len(temp_info['example_dialogs']),
+            'backup_path': temp_info['backup_path']
+        }
+    
+    async def extend_temporary_persona(self, group_id: str, additional_minutes: int) -> bool:
+        """延长临时人格持续时间"""
+        try:
+            if group_id not in self.active_temp_personas:
+                return False
+            
+            temp_info = self.active_temp_personas[group_id]
+            
+            # 更新过期时间
+            additional_seconds = additional_minutes * 60
+            temp_info['expiry_time'] += additional_seconds
+            temp_info['duration_minutes'] += additional_minutes
+            
+            # 取消旧的过期任务
+            if group_id in self.expiry_tasks:
+                self.expiry_tasks[group_id].cancel()
+            
+            # 创建新的过期任务
+            remaining_seconds = temp_info['expiry_time'] - time.time()
+            expiry_task = asyncio.create_task(
+                self._schedule_temp_persona_expiry(group_id, remaining_seconds)
+            )
+            self.expiry_tasks[group_id] = expiry_task
+            
+            logger.info(f"临时人格时间已延长 {additional_minutes} 分钟，群组: {group_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"延长临时人格失败: {e}")
+            return False
+    
+    async def list_persona_backups(self, group_id: str) -> List[Dict[str, Any]]:
+        """列出指定群组的人格备份文件"""
+        try:
+            group_backup_dir = os.path.join(self.backup_base_dir, f"group_{group_id}")
+            if not os.path.exists(group_backup_dir):
+                return []
+            
+            backups = []
+            for filename in os.listdir(group_backup_dir):
+                if filename.endswith('.txt'):
+                    file_path = os.path.join(group_backup_dir, filename)
+                    try:
+                        # 读取备份文件信息
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            backup_data = json.load(f)
+                        
+                        backup_info = {
+                            'filename': filename,
+                            'file_path': file_path,
+                            'persona_name': backup_data.get('backup_info', {}).get('persona_name', ''),
+                            'backup_time': backup_data.get('backup_info', {}).get('backup_time', ''),
+                            'backup_reason': backup_data.get('backup_info', {}).get('backup_reason', ''),
+                            'file_size': os.path.getsize(file_path)
+                        }
+                        backups.append(backup_info)
+                    except Exception as e:
+                        logger.warning(f"读取备份文件失败 {filename}: {e}")
+            
+            # 按时间排序（最新的在前）
+            backups.sort(key=lambda x: x['backup_time'], reverse=True)
+            return backups
+            
+        except Exception as e:
+            logger.error(f"列出人格备份失败: {e}")
+            return []
+    
+    async def restore_from_backup_file(self, group_id: str, backup_file_path: str) -> bool:
+        """从备份文件恢复人格"""
+        try:
+            if not os.path.exists(backup_file_path):
+                raise SelfLearningError(f"备份文件不存在: {backup_file_path}")
+            
+            # 读取备份数据
+            with open(backup_file_path, 'r', encoding='utf-8') as f:
+                backup_data = json.load(f)
+            
+            persona_data = backup_data.get('persona_data', {})
+            if not persona_data:
+                raise SelfLearningError("备份文件中没有有效的人格数据")
+            
+            # 在恢复前创建当前状态备份
+            await self.create_strict_persona_backup(group_id, f"恢复前备份_{datetime.now().strftime('%H%M%S')}")
+            
+            # 移除临时人格（如果存在）
+            if group_id in self.active_temp_personas:
+                await self.remove_temporary_persona(group_id, "恢复备份前移除")
+            
+            # 应用备份的人格
+            success = await self._apply_persona_to_system(group_id, persona_data)
+            
+            if success:
+                backup_name = backup_data.get('backup_info', {}).get('persona_name', '备份人格')
+                logger.info(TemporaryPersonaMessages.BACKUP_RESTORE_SUCCESS.format(backup_name=backup_name))
+            
+            return success
+            
+        except Exception as e:
+            logger.error(TemporaryPersonaMessages.BACKUP_RESTORE_FAILED.format(error=e))
+            return False
+    
+    async def read_and_apply_persona_updates(self, group_id: str) -> bool:
+        """
+        读取persona_updates.txt文件并应用增量人格更新
+        
+        Args:
+            group_id: 群组ID
+            
+        Returns:
+            bool: 是否成功应用更新
+        """
+        try:
+            logger.info(f"开始为群组 {group_id} 读取并应用人格更新")
+            
+            # 检查文件是否存在
+            if not os.path.exists(self.persona_updates_file):
+                logger.warning(f"人格更新文件不存在: {self.persona_updates_file}")
+                return False
+            
+            logger.info(f"人格更新文件存在: {self.persona_updates_file}")
+            
+            # 读取更新内容
+            updates = await self._read_persona_updates()
+            if not updates:
+                logger.warning("没有找到有效的人格更新内容")
+                return False
+            
+            logger.info(f"找到 {len(updates)} 个有效更新")
+            
+            # 创建备份
+            backup_path = await self.create_strict_persona_backup(group_id, "增量更新前备份")
+            logger.info(f"备份已创建: {backup_path}")
+            
+            # 获取当前人格
+            current_persona = await self.persona_updater.get_current_persona(group_id)
+            if not current_persona:
+                logger.error("无法获取当前人格信息")
+                return False
+            
+            logger.info(f"获取到当前人格: {current_persona.get('name', '未知')}")
+            
+            # 应用增量更新
+            updated_persona = await self._apply_incremental_updates(current_persona, updates)
+            logger.info(f"增量更新已应用到人格: {updated_persona.get('name', '未知')}")
+            
+            # 应用到系统
+            success = await self._apply_persona_to_system(group_id, updated_persona)
+            
+            if success:
+                # 清空更新文件，准备下次更新
+                await self._clear_persona_updates_file()
+                logger.info(f"成功应用 {len(updates)} 项人格增量更新到群组 {group_id}")
+                return True
+            else:
+                logger.error("应用人格更新到系统失败")
+                return False
+                
+        except Exception as e:
+            logger.error(f"读取并应用人格更新失败: {e}")
+            return False
+    
+    async def _read_persona_updates(self) -> List[str]:
+        """读取人格更新文件"""
+        try:
+            updates = []
+            logger.info(f"开始读取人格更新文件: {self.persona_updates_file}")
+            
+            with open(self.persona_updates_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            logger.info(f"读取到 {len(lines)} 行内容")
+            
+            for i, line in enumerate(lines, 1):
+                line = line.strip()
+                logger.debug(f"处理第{i}行: '{line}'")
+                
+                # 跳过空行和注释行
+                if line and not line.startswith('#'):
+                    # 处理不同类型的更新
+                    if line.startswith('+') or line.startswith('~'):
+                        updates.append(line)
+                        logger.info(f"找到有效更新 (第{i}行): {line}")
+            
+            logger.info(f"总共找到 {len(updates)} 个有效更新")
+            for idx, update in enumerate(updates, 1):
+                logger.info(f"更新{idx}: {update}")
+            
+            return updates
+            
+        except Exception as e:
+            logger.error(f"读取人格更新文件失败: {e}")
+            return []
+    
+    async def _apply_incremental_updates(self, current_persona: Dict[str, Any], updates: List[str]) -> Dict[str, Any]:
+        """应用增量更新到当前人格"""
+        try:
+            updated_persona = current_persona.copy()
+            current_prompt = updated_persona.get('prompt', '')
+            
+            # 去除重复的更新内容
+            unique_updates = list(dict.fromkeys(updates))  # 保持顺序的去重
+            logger.info(f"原始更新数量: {len(updates)}, 去重后: {len(unique_updates)}")
+            
+            # 构建增量更新文本
+            update_sections = []
+            
+            # 分类处理更新
+            additions = []
+            modifications = []
+            
+            for update in unique_updates:
+                if update.startswith('+'):
+                    additions.append(update[1:].strip())
+                elif update.startswith('~'):
+                    modifications.append(update[1:].strip())
+            
+            # 构建更新文本
+            if additions:
+                update_sections.append(f"【新增特征】\n" + "\n".join([f"• {add}" for add in additions]))
+            
+            if modifications:
+                update_sections.append(f"【行为调整】\n" + "\n".join([f"• {mod}" for mod in modifications]))
+            
+            # 将更新附加到现有prompt
+            if update_sections:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+                update_text = f"\n\n【增量更新 - {timestamp}】\n" + "\n\n".join(update_sections)
+                updated_persona['prompt'] = current_prompt + update_text
+                
+                # 更新人格名称以反映更新
+                original_name = updated_persona.get('name', '默认人格')
+                updated_persona['name'] = f"{original_name}_增量更新_{timestamp.replace(':', '').replace('-', '').replace(' ', '_')}"
+            
+            return updated_persona
+            
+        except Exception as e:
+            logger.error(f"应用增量更新失败: {e}")
+            return current_persona
+    
+    async def _clear_persona_updates_file(self):
+        """清空人格更新文件，准备下次更新"""
+        try:
+            # 保留文件头部说明，清空更新内容
+            header_content = """# 增量人格更新文件
+                # 本文件用于存储增量的人格文本更新
+                # 每次执行时会读取此文件的新内容并应用到当前人格
+
+                # 格式：每行一条增量更新，支持以下格式：
+                # 1. 直接添加特征：+ 特征描述
+                # 2. 修改行为：~ 行为描述
+                # 3. 注释行：# 开头的行会被忽略
+
+                # 示例：
+                # + 更加幽默风趣，喜欢使用轻松的语调
+                # ~ 回复时更加亲切，经常使用感叹号
+                # + 对新技术话题表现出浓厚兴趣
+
+                # 以下是待应用的增量更新：
+                """
+            with open(self.persona_updates_file, 'w', encoding='utf-8') as f:
+                f.write(header_content)
+                
+            logger.info("人格更新文件已清空，等待下次更新")
+            
+        except Exception as e:
+            logger.error(f"清空人格更新文件失败: {e}")
+
+    async def clear_persona_updates_file(self):
+        """公开的清空人格更新文件方法"""
+        await self._clear_persona_updates_file()
+
+    async def apply_mood_based_persona_update(self, group_id: str, mood_type: str, mood_description: str) -> bool:
+        """
+        基于情绪状态应用增量人格更新 - 自动清理重复内容并更新system prompt
+        
+        Args:
+            group_id: 群组ID
+            mood_type: 情绪类型
+            mood_description: 情绪描述
+            
+        Returns:
+            bool: 是否应用成功
+        """
+        try:
+            logger.info(f"开始应用基于情绪的增量更新: {mood_type} -> {mood_description}")
+            
+            # 0. 自动清理重复的历史内容（预防积累）
+            logger.info("自动清理重复的历史内容...")
+            
+            # 1. 创建基于情绪的增量更新内容
+            mood_update = f"~ 当前情绪状态: {mood_description}，请根据此情绪调整回复的语气和风格"
+            
+            # 2. 写入到persona_updates.txt文件（为了持久化和后续批量更新）
+            await self._append_to_persona_updates_file(mood_update)
+            logger.info(f"情绪更新已写入文件: {mood_update}")
+            
+            # 3. 立即应用到当前系统的 system prompt
+            success = await self._apply_mood_update_to_system_prompt(group_id, mood_description)
+            
+            if success:
+                logger.info(f"情绪状态增量更新应用成功: {mood_type} -> {mood_description}")
+                return True
+            else:
+                logger.warning(f"情绪状态增量更新应用失败，但文件写入成功")
+                return False
+            
+        except Exception as e:
+            logger.error(f"应用情绪状态更新失败: {e}")
+            return False
+
+    async def _apply_mood_update_to_system_prompt(self, group_id: str, mood_description: str) -> bool:
+        """
+        直接将情绪更新应用到系统的 system prompt
+        
+        Args:
+            group_id: 群组ID
+            mood_description: 情绪描述
+            
+        Returns:
+            bool: 是否应用成功
+        """
+        try:
+            # 获取provider
+            provider = self.context.get_using_provider()
+            if not provider:
+                logger.warning("无法获取provider，无法直接更新system prompt")
+                return False
+            
+            # 检查是否有当前人格
+            if not hasattr(provider, 'curr_personality'):
+                logger.warning("Provider没有curr_personality属性")
+                return False
+                
+            if not provider.curr_personality:
+                logger.warning("当前没有设置人格，无法直接更新")
+                return False
+            
+            # 获取当前的prompt
+            current_prompt = provider.curr_personality.get('prompt', '')
+            
+            # 彻底清理所有重复的历史内容
+            cleaned_prompt = self._clean_duplicate_content(current_prompt)
+            
+            # 构建情绪更新文本
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+            mood_update_text = f"\n\n【当前情绪状态 - {timestamp}】\n• 情绪描述: {mood_description}\n• 请根据此情绪调整回复的语气和风格，保持语言与心情对应"
+            
+            # 添加新的情绪状态更新
+            updated_prompt = cleaned_prompt + mood_update_text
+            provider.curr_personality['prompt'] = updated_prompt
+            
+            logger.info(f"成功将情绪状态直接更新到system prompt")
+            logger.info(f"情绪描述: {mood_description}")
+            logger.info(f"更新后prompt长度: {len(updated_prompt)}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"直接更新system prompt失败: {e}")
+            return False
+    
+    def _clean_duplicate_content(self, content: str) -> str:
+        """
+        彻底清理重复的历史内容
+        
+        Args:
+            content: 原始内容
+            
+        Returns:
+            str: 清理后的内容
+        """
+        try:
+            if not content:
+                return content
+            
+            # 清理标记列表
+            markers_to_clean = [
+                "【增量更新 -",
+                "【当前情绪状态 -", 
+                "【行为调整】"
+            ]
+            
+            lines = content.split('\n')
+            cleaned_lines = []
+            skip_until_next_section = False
+            
+            for line in lines:
+                line_stripped = line.strip()
+                
+                # 检查是否是需要清理的标记开始
+                is_marker_line = any(marker in line for marker in markers_to_clean)
+                
+                if is_marker_line:
+                    # 跳过这个标记及其内容，直到下一个【或内容结束
+                    skip_until_next_section = True
+                    continue
+                
+                # 如果在跳过模式中，检查是否遇到新的【标记（不在清理列表中）
+                if skip_until_next_section:
+                    if line.startswith('【') and not any(marker in line for marker in markers_to_clean):
+                        # 遇到新的标记，停止跳过
+                        skip_until_next_section = False
+                        cleaned_lines.append(line)
+                    elif not line.startswith('【') and not line.startswith('•') and line_stripped:
+                        # 遇到非标记、非列表项的内容，停止跳过
+                        skip_until_next_section = False
+                        cleaned_lines.append(line)
+                    # 否则继续跳过
+                else:
+                    cleaned_lines.append(line)
+            
+            # 清理多余的空行
+            result_lines = []
+            prev_empty = False
+            
+            for line in cleaned_lines:
+                if line.strip() == '':
+                    if not prev_empty:
+                        result_lines.append(line)
+                    prev_empty = True
+                else:
+                    result_lines.append(line)
+                    prev_empty = False
+            
+            # 移除末尾的空行
+            while result_lines and result_lines[-1].strip() == '':
+                result_lines.pop()
+            
+            cleaned_content = '\n'.join(result_lines)
+            
+            logger.info(f"清理前内容长度: {len(content)}, 清理后内容长度: {len(cleaned_content)}")
+            
+            return cleaned_content
+            
+        except Exception as e:
+            logger.error(f"清理重复内容失败: {e}")
+            return content
+
+    async def _append_to_persona_updates_file(self, update_content: str):
+        """向人格更新文件追加内容（带去重逻辑）"""
+        try:
+            logger.info(f"准备向文件追加内容: {self.persona_updates_file}")
+            logger.info(f"更新内容: {update_content}")
+            
+            # 检查文件是否存在，如果不存在先创建
+            if not os.path.exists(self.persona_updates_file):
+                logger.warning(f"人格更新文件不存在，将创建新文件: {self.persona_updates_file}")
+                # 创建文件头部
+                header_content = """# 增量人格更新文件
+                    # 本文件用于存储增量的人格文本更新
+                    # 每次执行时会读取此文件的新内容并应用到当前人格
+
+                    # 格式：每行一条增量更新，支持以下格式：
+                    # 1. 直接添加特征：+ 特征描述
+                    # 2. 修改行为：~ 行为描述
+                    # 3. 注释行：# 开头的行会被忽略
+
+                    # 示例：
+                    # + 更加幽默风趣，喜欢使用轻松的语调
+                    # ~ 回复时更加亲切，经常使用感叹号
+                    # + 对新技术话题表现出浓厚兴趣
+
+                    # 以下是待应用的增量更新：
+                    """
+                with open(self.persona_updates_file, 'w', encoding='utf-8') as f:
+                    f.write(header_content)
+                logger.info(f"已创建人格更新文件: {self.persona_updates_file}")
+            
+            # 读取现有内容进行去重检查
+            existing_content = ""
+            try:
+                with open(self.persona_updates_file, 'r', encoding='utf-8') as f:
+                    existing_content = f.read()
+            except Exception as e:
+                logger.warning(f"读取现有文件内容失败: {e}")
+                
+            # 检查是否已存在相同的情绪状态更新
+            if "当前情绪状态:" in update_content:
+                # 移除旧的情绪状态更新
+                lines = existing_content.split('\n')
+                filtered_lines = []
+                
+                for line in lines:
+                    # 跳过包含"当前情绪状态:"的行
+                    if "当前情绪状态:" not in line:
+                        filtered_lines.append(line)
+                
+                # 重写文件（不包含旧的情绪状态）
+                with open(self.persona_updates_file, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(filtered_lines))
+                    
+                logger.info("已移除文件中旧的情绪状态更新")
+            else:
+                # 对于非情绪状态的更新，检查是否已存在相同内容
+                if update_content in existing_content:
+                    logger.info(f"内容已存在于文件中，跳过重复追加: {update_content}")
+                    return
+            
+            # 追加新的更新内容
+            with open(self.persona_updates_file, 'a', encoding='utf-8') as f:
+                f.write(f"\n{update_content}")
+            
+            logger.info(f"已成功向人格更新文件追加内容: {update_content}")
+            
+            # 验证写入是否成功
+            with open(self.persona_updates_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if update_content in content:
+                    logger.info("写入验证成功，内容已确认存在于文件中")
+                else:
+                    logger.error("写入验证失败，内容不存在于文件中")
+                    
+        except Exception as e:
+            logger.error(f"追加到人格更新文件失败: {e}")
+            raise
+
+    async def cleanup_temp_personas(self):
+        """清理所有临时人格（用于插件卸载）"""
+        for group_id in list(self.active_temp_personas.keys()):
+            await self.remove_temporary_persona(group_id, "插件清理")
+        
+        # 取消所有过期任务
+        for task in self.expiry_tasks.values():
+            task.cancel()
+        self.expiry_tasks.clear()
+        
+        logger.info("临时人格清理完成")

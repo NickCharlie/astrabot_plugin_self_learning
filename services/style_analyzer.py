@@ -120,7 +120,12 @@ class StyleAnalyzerService:
                 text=text
             )
             
-            response = await llm_client.chat_completion(prompt=prompt)
+            response = await llm_client.chat_completion(
+                api_url=self.config.refine_api_url or "https://api.openai.com/v1",
+                api_key=self.config.refine_api_key or "",
+                model_name=self.config.refine_model_name,
+                prompt=prompt
+            )
             
             if response and response.text():
                 try:
@@ -141,7 +146,12 @@ class StyleAnalyzerService:
                 text=text
             )
             
-            response = await llm_client.chat_completion(prompt=prompt)
+            response = await llm_client.chat_completion(
+                api_url=self.config.refine_api_url or "https://api.openai.com/v1",
+                api_key=self.config.refine_api_key or "",
+                model_name=self.config.refine_model_name,
+                prompt=prompt
+            )
             
             if response and response.text():
                 try:
@@ -263,7 +273,12 @@ class StyleAnalyzerService:
                 target_persona=target_persona
             )
             
-            response = await llm_client.chat_completion(prompt=prompt)
+            response = await llm_client.chat_completion(
+                api_url=self.config.refine_api_url or "https://api.openai.com/v1",
+                api_key=self.config.refine_api_key or "",
+                model_name=self.config.refine_model_name,
+                prompt=prompt
+            )
             
             if response and response.text():
                 try:

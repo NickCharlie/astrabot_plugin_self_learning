@@ -109,31 +109,55 @@ class LearningQualityMonitor:
     async def _calculate_consistency(self, 
                                    original_persona: Dict[str, Any],
                                    updated_persona: Dict[str, Any]) -> float:
-        """计算人格一致性得分"""
+        """计算人格一致性得分 - 使用强LLM进行专业评估"""
         try:
-            if not self._llm_client:
-                logger.warning("LLM客户端未初始化，无法使用LLM计算一致性，使用默认值。")
+            original_prompt = original_persona.get('prompt', '')
+            updated_prompt = updated_persona.get('prompt', '')
+            
+            if not original_prompt or not updated_prompt:
+                return 0.5  # 默认中等一致性
+            
+            # 使用强LLM进行一致性分析
+            if self._llm_client:
+                prompt = self.prompts.LEARNING_QUALITY_MONITOR_CONSISTENCY_PROMPT.format(
+                    original_persona_prompt=original_prompt,
+                    updated_persona_prompt=updated_prompt
+                )
+                
+                response = await self._llm_client.chat_completion(
+                    prompt=prompt,
+                    api_url=self.config.filter_api_url,  # 使用强LLM
+                    api_key=self.config.filter_api_key,
+                    model_name=self.config.filter_model_name
+                )
+                
+                if response and response.text():
+                    try:
+                        # 解析LLM返回的一致性得分
+                        consistency_text = response.text().strip()
+                        # 提取数值
+                        import re
+                        numbers = re.findall(r'0\.\d+|\d+\.\d+', consistency_text)
+                        if numbers:
+                            consistency_score = float(numbers[0])
+                            logger.debug(f"LLM一致性评分: {consistency_score:.3f}")
+                            return min(consistency_score, 1.0)
+                    except (ValueError, IndexError):
+                        logger.warning(f"LLM一致性得分解析失败: {response.text()}")
+            
+            # 如果LLM失败，使用简单的文本相似度作为后备
+            original_words = set(original_prompt.split())
+            updated_words = set(updated_prompt.split())
+            
+            if len(original_words) == 0 or len(updated_words) == 0:
                 return 0.5
             
-            prompt = self.prompts.LEARNING_QUALITY_MONITOR_CONSISTENCY_PROMPT.format(
-                original_persona_prompt=original_persona.get('prompt', ''),
-                updated_persona_prompt=updated_persona.get('prompt', '')
-            )
+            intersection = original_words.intersection(updated_words)
+            union = original_words.union(updated_words)
+            similarity = len(intersection) / len(union) if union else 0.5
             
-            # 调用模型分析
-            response = await self._llm_client.chat_completion(
-                prompt=prompt,
-                api_url=self.config.refine_api_url,
-                api_key=self.config.refine_api_key,
-                model_name=self.config.refine_model_name
-            )
-            
-            # 尝试提取数值
-            numbers = re.findall(r'0\.\d+|1\.0|0', response)
-            if numbers:
-                return min(float(numbers[0]), 1.0) # 修改为 float(numbers[0])
-            
-            return 0.5
+            logger.debug(f"后备一致性评分 (文本相似度): {similarity:.3f}")
+            return min(similarity, 1.0)
             
         except Exception as e:
             logger.warning(f"一致性计算失败，使用默认值: {e}")
@@ -202,7 +226,7 @@ class LearningQualityMonitor:
         messages_text = "\n".join([msg['message'] for msg in messages])
         
         prompt = self.prompts.LEARNING_QUALITY_MONITOR_EMOTIONAL_BALANCE_PROMPT.format(
-            messages_text=messages_text
+            batch_messages=messages_text
         )
         try:
             response = await self._llm_client.chat_completion(
@@ -445,3 +469,50 @@ class LearningQualityMonitor:
             return True, "检测到多个严重质量问题"
         
         return False, ""
+
+    async def adjust_thresholds_based_on_history(self):
+        """基于历史指标动态调整阈值"""
+        try:
+            if len(self.historical_metrics) < 5:
+                # 历史数据不足，使用默认阈值
+                return
+            
+            # 获取最近的指标
+            recent_metrics = self.historical_metrics[-5:]
+            
+            # 计算最近的平均表现
+            avg_consistency = sum(m.consistency_score for m in recent_metrics) / len(recent_metrics)
+            avg_stability = sum(m.style_stability for m in recent_metrics) / len(recent_metrics)
+            
+            # 动态调整阈值 - 如果系统表现持续良好，可以适当提高阈值
+            if avg_consistency > 0.8:
+                self.consistency_threshold = min(0.8, self.consistency_threshold + 0.05)
+            elif avg_consistency < 0.5:
+                self.consistency_threshold = max(0.6, self.consistency_threshold - 0.05)
+            
+            if avg_stability > 0.7:
+                self.stability_threshold = min(0.7, self.stability_threshold + 0.05)
+            elif avg_stability < 0.4:
+                self.stability_threshold = max(0.5, self.stability_threshold - 0.05)
+            
+            # 根据变化幅度调整偏移阈值
+            if len(recent_metrics) >= 2:
+                recent_changes = []
+                for i in range(1, len(recent_metrics)):
+                    change = abs(recent_metrics[i].consistency_score - recent_metrics[i-1].consistency_score)
+                    recent_changes.append(change)
+                
+                avg_change = sum(recent_changes) / len(recent_changes)
+                if avg_change < 0.1:
+                    # 变化很小，可以提高偏移阈值
+                    self.drift_threshold = min(0.4, self.drift_threshold + 0.05)
+                elif avg_change > 0.3:
+                    # 变化很大，降低偏移阈值
+                    self.drift_threshold = max(0.2, self.drift_threshold - 0.05)
+            
+            logger.debug(f"动态调整阈值 - 一致性: {self.consistency_threshold:.2f}, "
+                        f"稳定性: {self.stability_threshold:.2f}, "
+                        f"偏移: {self.drift_threshold:.2f}")
+                        
+        except Exception as e:
+            logger.warning(f"动态调整阈值失败: {e}")

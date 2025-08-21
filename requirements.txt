@@ -75,6 +75,9 @@ opencv-python
 bokeh
 pygments
 
+# 图和网络分析
+networkx
+
 # 网络工具
 urllib3
 certifi

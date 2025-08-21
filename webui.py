@@ -487,6 +487,173 @@ async def get_analytics_trends():
     except Exception as e:
         return jsonify({"error": f"获取趋势数据失败: {str(e)}"}), 500
 
+# 新增的高级功能API端点
+
+@api_bp.route("/advanced/data_analytics")
+@require_auth
+async def get_data_analytics():
+    """获取数据分析与可视化"""
+    try:
+        from .core.factory import FactoryManager
+        
+        # 获取工厂管理器
+        factory_manager = FactoryManager()
+        component_factory = factory_manager.get_component_factory()
+        
+        # 创建数据分析服务
+        data_analytics_service = component_factory.create_data_analytics_service()
+        
+        group_id = request.args.get('group_id', 'default')
+        days = int(request.args.get('days', '30'))
+        
+        # 获取真实的分析数据
+        learning_trajectory = await data_analytics_service.generate_learning_trajectory_chart(group_id, days)
+        user_activity_heatmap = await data_analytics_service.generate_user_activity_heatmap(group_id, days)
+        social_network = await data_analytics_service.generate_social_network_graph(group_id)
+        
+        analytics_data = {
+            "learning_trajectory": learning_trajectory,
+            "user_activity_heatmap": user_activity_heatmap,
+            "social_network": social_network
+        }
+        
+        return jsonify(analytics_data)
+        
+    except Exception as e:
+        return jsonify({"error": f"获取数据分析失败: {str(e)}"}), 500
+
+@api_bp.route("/advanced/learning_status")
+@require_auth
+async def get_advanced_learning_status():
+    """获取高级学习状态"""
+    try:
+        from .core.factory import FactoryManager
+        
+        factory_manager = FactoryManager()
+        component_factory = factory_manager.get_component_factory()
+        
+        # 创建高级学习服务
+        advanced_learning_service = component_factory.create_advanced_learning_service()
+        
+        group_id = request.args.get('group_id', 'default')
+        
+        # 获取真实的高级学习状态
+        status = await advanced_learning_service.get_learning_status(group_id)
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({"error": f"获取高级学习状态失败: {str(e)}"}), 500
+
+@api_bp.route("/advanced/interaction_status")
+@require_auth
+async def get_interaction_status():
+    """获取交互增强状态"""
+    try:
+        from .core.factory import FactoryManager
+        
+        factory_manager = FactoryManager()
+        component_factory = factory_manager.get_component_factory()
+        
+        # 创建增强交互服务
+        interaction_service = component_factory.create_enhanced_interaction_service()
+        
+        group_id = request.args.get('group_id', 'default')
+        
+        # 获取真实的交互状态
+        status = await interaction_service.get_interaction_status(group_id)
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({"error": f"获取交互状态失败: {str(e)}"}), 500
+
+@api_bp.route("/advanced/intelligence_status")
+@require_auth
+async def get_intelligence_status():
+    """获取智能化状态"""
+    try:
+        from .core.factory import FactoryManager
+        
+        factory_manager = FactoryManager()
+        component_factory = factory_manager.get_component_factory()
+        
+        # 创建智能化服务
+        intelligence_service = component_factory.create_intelligence_enhancement_service()
+        
+        group_id = request.args.get('group_id', 'default')
+        
+        # 获取真实的智能化状态
+        status = await intelligence_service.get_intelligence_status(group_id)
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({"error": f"获取智能化状态失败: {str(e)}"}), 500
+
+@api_bp.route("/advanced/trigger_context_switch", methods=["POST"])
+@require_auth
+async def trigger_context_switch():
+    """手动触发情境切换"""
+    try:
+        from .core.factory import FactoryManager
+        
+        factory_manager = FactoryManager()
+        component_factory = factory_manager.get_component_factory()
+        
+        # 创建高级学习服务
+        advanced_learning_service = component_factory.create_advanced_learning_service()
+        
+        data = await request.get_json()
+        group_id = data.get('group_id', 'default')
+        target_context = data.get('target_context', 'casual')
+        
+        # 调用实际的情境切换功能
+        result = await advanced_learning_service.trigger_context_switch(group_id, target_context)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"情境切换失败: {str(e)}"}), 500
+
+@api_bp.route("/advanced/generate_recommendations", methods=["POST"])
+@require_auth  
+async def generate_recommendations():
+    """生成个性化推荐"""
+    try:
+        from .core.factory import FactoryManager
+        
+        factory_manager = FactoryManager()
+        component_factory = factory_manager.get_component_factory()
+        
+        # 创建智能化服务
+        intelligence_service = component_factory.create_intelligence_enhancement_service()
+        
+        data = await request.get_json()
+        group_id = data.get('group_id', 'default')
+        user_id = data.get('user_id', 'user_1')
+        
+        # 调用实际的个性化推荐功能
+        recommendations = await intelligence_service.generate_personalized_recommendations(
+            group_id, user_id, data
+        )
+        
+        # 转换为字典格式
+        recommendations_dict = [
+            {
+                "type": rec.recommendation_type,
+                "content": rec.content,
+                "confidence": rec.confidence,
+                "reasoning": rec.reasoning
+            }
+            for rec in recommendations
+        ]
+        
+        return jsonify({"recommendations": recommendations_dict})
+        
+    except Exception as e:
+        return jsonify({"error": f"生成推荐失败: {str(e)}"}), 500
+
 app.register_blueprint(api_bp)
 
 # 添加根路由重定向

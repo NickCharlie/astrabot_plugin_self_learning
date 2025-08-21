@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.event import filter
+from astrbot.api.event.filter import PermissionType
 import astrbot.api.star as star
 from astrbot.api.star import register, Context
 from astrbot.api import logger, AstrBotConfig
@@ -20,6 +21,7 @@ from .config import PluginConfig
 from .core.factory import FactoryManager
 from .exceptions import SelfLearningError
 from .webui import Server, set_plugin_services # 导入 FastAPI 服务器相关
+from .statics.messages import StatusMessages, CommandMessages, LogMessages, FileNames, DefaultValues
 
 server_instance: Optional[Server] = None # 全局服务器实例
 
@@ -53,9 +55,9 @@ class SelfLearningPlugin(star.Star):
         
         # 初始化 messages_db_path 和 learning_log_path
         if not self.plugin_config.messages_db_path:
-            self.plugin_config.messages_db_path = os.path.join(self.plugin_config.data_dir, "messages.db")
+            self.plugin_config.messages_db_path = os.path.join(self.plugin_config.data_dir, FileNames.MESSAGES_DB_FILE)
         if not self.plugin_config.learning_log_path:
-            self.plugin_config.learning_log_path = os.path.join(self.plugin_config.data_dir, "learning.log")
+            self.plugin_config.learning_log_path = os.path.join(self.plugin_config.data_dir, FileNames.LEARNING_LOG_FILE)
         
         # 学习统计
         self.learning_stats = LearningStats()
@@ -68,36 +70,36 @@ class SelfLearningPlugin(star.Star):
         if self.plugin_config.enable_web_interface:
             server_instance = Server(port=self.plugin_config.web_interface_port)
             if server_instance:
-                logger.info(f"Web 界面已启用，将在 http://{server_instance.host}:{server_instance.port} 启动")
+                logger.info(StatusMessages.WEB_INTERFACE_ENABLED.format(host=server_instance.host, port=server_instance.port))
                 # 直接启动服务器而不是等待 on_load
                 try:
                     import asyncio
                     loop = asyncio.get_event_loop()
                     loop.create_task(self._start_web_server())
-                    logger.info("Web 服务器启动任务已创建")
+                    logger.info(StatusMessages.WEB_SERVER_TASK_CREATED)
                 except Exception as e:
-                    logger.error(f"创建 Web 服务器启动任务失败: {e}", exc_info=True)
+                    logger.error(StatusMessages.WEB_SERVER_START_FAILED.format(error=e), exc_info=True)
             else:
-                logger.error("Web 界面初始化失败")
+                logger.error(StatusMessages.WEB_INTERFACE_INIT_FAILED)
         else:
-            logger.info("Web 界面未启用")
+            logger.info(StatusMessages.WEB_INTERFACE_DISABLED)
         
-        logger.info("自学习插件初始化完成")
+        logger.info(StatusMessages.PLUGIN_INITIALIZED)
 
     async def _start_web_server(self):
         """启动Web服务器的异步方法"""
         global server_instance
         if server_instance:
-            logger.info("开始启动 Web 服务器...")
+            logger.info(StatusMessages.WEB_SERVER_STARTING)
             try:
                 await server_instance.start()
-                logger.info("Web 服务器启动成功")
+                logger.info(StatusMessages.WEB_SERVER_STARTED)
                 
                 # 启动数据库管理器
                 await self.db_manager.start()
-                logger.info("数据库管理器启动完成")
+                logger.info(StatusMessages.DB_MANAGER_STARTED)
             except Exception as e:
-                logger.error(f"Web 服务器启动失败: {e}", exc_info=True)
+                logger.error(StatusMessages.WEB_SERVER_START_FAILED.format(error=e), exc_info=True)
 
     def _initialize_services(self):
         """初始化所有服务层组件 - 使用工厂模式"""
@@ -109,7 +111,7 @@ class SelfLearningPlugin(star.Star):
             # 获取服务工厂
             self.service_factory = self.factory_manager.get_service_factory()
             
-            # 使用工厂创建服务
+            # 使用工厂创建核心服务
             self.db_manager = self.service_factory.create_database_manager()
             self.message_collector = self.service_factory.create_message_collector()
             self.multidimensional_analyzer = self.service_factory.create_multidimensional_analyzer()
@@ -118,7 +120,18 @@ class SelfLearningPlugin(star.Star):
             self.progressive_learning = self.service_factory.create_progressive_learning()
             self.intelligent_responder = self.service_factory.create_intelligent_responder()
             self.ml_analyzer = self.service_factory.create_ml_analyzer()
-            self.persona_manager = self.service_factory.create_persona_manager() # 更名为 persona_manager
+            self.persona_manager = self.service_factory.create_persona_manager()
+            
+            # 获取组件工厂并创建新的高级服务
+            component_factory = self.factory_manager.get_component_factory()
+            self.data_analytics = component_factory.create_data_analytics_service()
+            self.advanced_learning = component_factory.create_advanced_learning_service()
+            self.enhanced_interaction = component_factory.create_enhanced_interaction_service()
+            self.intelligence_enhancement = component_factory.create_intelligence_enhancement_service()
+            self.affection_manager = component_factory.create_affection_manager_service()
+            
+            # 创建临时人格更新器
+            self.temporary_persona_updater = self.service_factory.create_temporary_persona_updater()
             
             # 初始化内部组件
             self._setup_internal_components()
@@ -131,17 +144,17 @@ class SelfLearningPlugin(star.Star):
                     self.service_factory.create_llm_client() # 传递 LLMClient 实例
                 )
             
-            logger.info("自学习插件工厂模式服务层初始化完成")
+            logger.info(StatusMessages.FACTORY_SERVICES_INIT_COMPLETE)
             
         except SelfLearningError as sle:
-            logger.error(f"自学习服务初始化失败: {sle}")
+            logger.error(StatusMessages.SERVICES_INIT_FAILED.format(error=sle))
             raise # Re-raise as this is an expected initialization failure
         except (TypeError, ValueError) as e: # Catch common initialization errors
-            logger.error(f"服务层初始化过程中发生配置或类型错误: {e}", exc_info=True)
-            raise SelfLearningError(f"插件初始化失败: {str(e)}") from e
+            logger.error(StatusMessages.CONFIG_TYPE_ERROR.format(error=e), exc_info=True)
+            raise SelfLearningError(StatusMessages.INIT_FAILED_GENERIC.format(error=str(e))) from e
         except Exception as e: # Catch any other unexpected errors
-            logger.error(f"服务层初始化过程中发生未知错误: {e}", exc_info=True)
-            raise SelfLearningError(f"插件初始化失败: {str(e)}") from e
+            logger.error(StatusMessages.UNKNOWN_INIT_ERROR.format(error=e), exc_info=True)
+            raise SelfLearningError(StatusMessages.INIT_FAILED_GENERIC.format(error=str(e))) from e
     
     def _setup_internal_components(self):
         """设置内部组件 - 使用工厂模式"""
@@ -176,29 +189,29 @@ class SelfLearningPlugin(star.Star):
     
     async def on_load(self):
         """插件加载时启动 Web 服务器和数据库管理器"""
-        logger.info("开始执行 on_load 方法")
+        logger.info(StatusMessages.ON_LOAD_START)
         global server_instance
         if self.plugin_config.enable_web_interface and server_instance:
-            logger.info(f"准备启动 Web 服务器，地址: {server_instance.host}:{server_instance.port}")
+            logger.info(StatusMessages.WEB_SERVER_PREPARE.format(host=server_instance.host, port=server_instance.port))
             try:
                 await server_instance.start()
-                logger.info("Web 服务器启动完成")
+                logger.info(StatusMessages.PLUGIN_LOAD_COMPLETE)
             except Exception as e:
-                logger.error(f"Web 服务器启动失败: {e}", exc_info=True)
+                logger.error(StatusMessages.WEB_SERVER_START_FAILED.format(error=e), exc_info=True)
         else:
             if not self.plugin_config.enable_web_interface:
-                logger.info("Web 界面被禁用，跳过服务器启动")
+                logger.info(StatusMessages.WEB_INTERFACE_DISABLED_SKIP)
             if not server_instance:
-                logger.error("Server 实例为 None，无法启动 Web 服务器")
+                logger.error(StatusMessages.SERVER_INSTANCE_NULL)
         
         # 启动数据库管理器，确保数据库表被创建
         try:
             await self.db_manager.start()
-            logger.info("数据库管理器启动完成")
+            logger.info(StatusMessages.DB_MANAGER_STARTED)
         except Exception as e:
-            logger.error(f"数据库管理器启动失败: {e}", exc_info=True)
+            logger.error(StatusMessages.DB_MANAGER_START_FAILED.format(error=e), exc_info=True)
         
-        logger.info("自学习插件加载完成")
+        logger.info(StatusMessages.PLUGIN_LOAD_COMPLETE)
 
     async def _delayed_start_learning(self, group_id: str):
         """延迟启动学习服务"""
@@ -207,9 +220,9 @@ class SelfLearningPlugin(star.Star):
             await self.service_factory.initialize_all_services() # 确保所有服务初始化完成
             # 启动针对特定 group_id 的渐进式学习
             await self.progressive_learning.start_learning(group_id)
-            logger.info(f"自动学习调度器已启动 for group {group_id}")
+            logger.info(StatusMessages.AUTO_LEARNING_SCHEDULER_STARTED.format(group_id=group_id))
         except Exception as e:
-            logger.error(f"启动学习服务失败 for group {group_id}: {e}")
+            logger.error(StatusMessages.LEARNING_SERVICE_START_FAILED.format(group_id=group_id, error=e))
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -237,41 +250,75 @@ class SelfLearningPlugin(star.Star):
                 'sender_id': sender_id,
                 'sender_name': event.get_sender_name(),
                 'message': message_text,
-                'group_id': group_id, # 使用 group_id
+                'group_id': group_id,
                 'timestamp': time.time(),
                 'platform': event.get_platform_name()
             })
             
             self.learning_stats.total_messages_collected += 1
             
+            # 处理好感度系统交互（如果启用）
+            if self.plugin_config.enable_affection_system:
+                try:
+                    affection_result = await self.affection_manager.process_message_interaction(
+                        group_id, sender_id, message_text
+                    )
+                    if affection_result.get('success'):
+                        logger.debug(LogMessages.AFFECTION_PROCESSING_SUCCESS.format(result=affection_result))
+                except Exception as e:
+                    logger.error(LogMessages.AFFECTION_PROCESSING_FAILED.format(error=e))
+            
+            # 处理增强交互（多轮对话管理）
+            try:
+                await self.enhanced_interaction.update_conversation_context(
+                    group_id, sender_id, message_text
+                )
+            except Exception as e:
+                logger.error(LogMessages.ENHANCED_INTERACTION_FAILED.format(error=e))
+            
             # 如果启用实时学习，立即进行筛选
             if self.plugin_config.enable_realtime_learning:
-                await self._process_message_realtime(group_id, message_text, sender_id) # 传递 group_id
+                await self._process_message_realtime(group_id, message_text, sender_id)
                 
         except Exception as e:
-            logger.error(f"消息收集过程中发生未知错误: {e}", exc_info=True)
+            logger.error(StatusMessages.MESSAGE_COLLECTION_ERROR.format(error=e), exc_info=True)
 
     async def _process_message_realtime(self, group_id: str, message_text: str, sender_id: str):
         """实时处理消息"""
         try:
             # 使用弱模型筛选消息
-            # 获取当前会话的人格描述
             current_persona_description = await self.persona_manager.get_current_persona_description()
+            
+            # 检查是否需要智能回复
+            if self.plugin_config.enable_intelligent_reply:
+                should_reply = await self.intelligent_responder.should_respond(
+                    group_id, sender_id, message_text
+                )
+                if should_reply:
+                    # 获取好感度影响的系统提示词
+                    if self.plugin_config.enable_affection_system:
+                        base_prompt = current_persona_description or None
+                        enhanced_prompt = await self.affection_manager.get_mood_influenced_system_prompt(
+                            group_id, base_prompt
+                        )
+                        # 这里可以触发智能回复，但需要根据AstrBot的架构来实现
+                        logger.info(LogMessages.INTELLIGENT_REPLY_DETECTED.format(prompt_preview=enhanced_prompt[:100]))
             
             if await self.multidimensional_analyzer.filter_message_with_llm(message_text, current_persona_description):
                 await self.message_collector.add_filtered_message({
                     'message': message_text,
                     'sender_id': sender_id,
-                    'group_id': group_id, # 添加 group_id
+                    'group_id': group_id,
                     'timestamp': time.time(),
                     'confidence': 0.8  # 实时筛选置信度
                 })
                 self.learning_stats.filtered_messages += 1
                 
         except Exception as e:
-            logger.error(f"实时消息处理过程中发生未知错误: {e}", exc_info=True)
+            logger.error(StatusMessages.REALTIME_PROCESSING_ERROR.format(error=e), exc_info=True)
 
     @filter.command("learning_status")
+    @filter.permission_type(PermissionType.ADMIN)
     async def learning_status_command(self, event: AstrMessageEvent):
         """查看学习状态"""
         try:
@@ -282,62 +329,77 @@ class SelfLearningPlugin(star.Star):
             
             # 获取当前人格设置
             current_persona_info = await self.persona_manager.get_current_persona(group_id)
-            current_persona_name = current_persona_info.get('name', '未知') if current_persona_info else '未知'
+            current_persona_name = current_persona_info.get('name', CommandMessages.STATUS_UNKNOWN) if current_persona_info else CommandMessages.STATUS_UNKNOWN
             
             # 获取渐进式学习服务的状态
             learning_status = await self.progressive_learning.get_learning_status()
             
-            status_info = f"""📚 自学习插件状态报告 (会话ID: {group_id}):
-
-🔧 基础配置:
-- 消息抓取: {'✅ 启用' if self.plugin_config.enable_message_capture else '❌ 禁用'}
-- 自主学习: {'✅ 启用' if self.plugin_config.enable_auto_learning else '❌ 禁用'}
-- 实时学习: {'✅ 启用' if self.plugin_config.enable_realtime_learning else '❌ 禁用'}
-- Web界面: {'✅ 启用' if self.plugin_config.enable_web_interface else '❌ 禁用'}
-
-👥 抓取设置:
-- 目标QQ: {self.plugin_config.target_qq_list if self.plugin_config.target_qq_list else '全部用户'}
-- 当前人格: {current_persona_name}
-
-🤖 模型配置:
-- 筛选模型: {self.plugin_config.filter_model_name}
-- 提炼模型: {self.plugin_config.refine_model_name}
-
-📊 学习统计 (当前会话):
-- 总收集消息: {collector_stats.get('total_messages', 0)}
-- 筛选消息: {collector_stats.get('filtered_messages', 0)}  
-- 风格更新次数: {learning_status.get('current_session', {}).get('style_updates', 0)}
-- 最后学习时间: {learning_status.get('current_session', {}).get('end_time', '从未执行')}
-
-💾 存储统计 (当前会话):
-- 原始消息: {collector_stats.get('raw_messages', 0)} 条
-- 待处理消息: {collector_stats.get('unprocessed_messages', 0)} 条
-- 筛选过的消息: {collector_stats.get('filtered_messages', 0)} 条
-
-⏰ 调度状态 (当前会话): {'🟢 运行中' if learning_status.get('learning_active') else '🔴 已停止'}"""
+            # 构建状态信息
+            status_info = CommandMessages.STATUS_REPORT_HEADER.format(group_id=group_id)
+            
+            # 基础配置
+            status_info += CommandMessages.STATUS_BASIC_CONFIG.format(
+                message_capture=CommandMessages.STATUS_ENABLED if self.plugin_config.enable_message_capture else CommandMessages.STATUS_DISABLED,
+                auto_learning=CommandMessages.STATUS_ENABLED if self.plugin_config.enable_auto_learning else CommandMessages.STATUS_DISABLED,
+                realtime_learning=CommandMessages.STATUS_ENABLED if self.plugin_config.enable_realtime_learning else CommandMessages.STATUS_DISABLED,
+                web_interface=CommandMessages.STATUS_ENABLED if self.plugin_config.enable_web_interface else CommandMessages.STATUS_DISABLED
+            )
+            
+            # 抓取设置
+            status_info += CommandMessages.STATUS_CAPTURE_SETTINGS.format(
+                target_qq=self.plugin_config.target_qq_list if self.plugin_config.target_qq_list else CommandMessages.STATUS_ALL_USERS,
+                current_persona=current_persona_name
+            )
+            
+            # 模型配置
+            status_info += CommandMessages.STATUS_MODEL_CONFIG.format(
+                filter_model=self.plugin_config.filter_model_name,
+                refine_model=self.plugin_config.refine_model_name
+            )
+            
+            # 学习统计
+            status_info += CommandMessages.STATUS_LEARNING_STATS.format(
+                total_messages=collector_stats.get('total_messages', 0),
+                filtered_messages=collector_stats.get('filtered_messages', 0),
+                style_updates=learning_status.get('current_session', {}).get('style_updates', 0),
+                last_learning_time=learning_status.get('current_session', {}).get('end_time', CommandMessages.STATUS_NEVER_EXECUTED)
+            )
+            
+            # 存储统计
+            status_info += CommandMessages.STATUS_STORAGE_STATS.format(
+                raw_messages=collector_stats.get('raw_messages', 0),
+                unprocessed_messages=collector_stats.get('unprocessed_messages', 0),
+                filtered_messages=collector_stats.get('filtered_messages', 0)
+            )
+            
+            # 调度状态
+            scheduler_status = CommandMessages.STATUS_RUNNING if learning_status.get('learning_active') else CommandMessages.STATUS_STOPPED
+            status_info += "\n\n" + CommandMessages.STATUS_SCHEDULER.format(status=scheduler_status)
 
             yield event.plain_result(status_info.strip())
             
         except Exception as e:
-            logger.error(f"获取学习状态失败: {e}", exc_info=True)
-            yield event.plain_result(f"状态查询失败: {str(e)}")
+            logger.error(CommandMessages.ERROR_GET_LEARNING_STATUS.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.STATUS_QUERY_FAILED.format(error=str(e)))
 
     @filter.command("start_learning")
+    @filter.permission_type(PermissionType.ADMIN)
     async def start_learning_command(self, event: AstrMessageEvent):
         """手动启动学习"""
         try:
             group_id = event.get_group_id() or event.get_sender_id()
             
             if await self.progressive_learning.start_learning(group_id):
-                yield event.plain_result(f"✅ 自动学习已启动 for group {group_id}")
+                yield event.plain_result(CommandMessages.LEARNING_STARTED.format(group_id=group_id))
             else:
-                yield event.plain_result(f"📚 自动学习已在运行中 for group {group_id}")
+                yield event.plain_result(CommandMessages.LEARNING_RUNNING.format(group_id=group_id))
             
         except Exception as e:
-            logger.error(f"启动学习失败: {e}", exc_info=True)
-            yield event.plain_result(f"启动失败: {str(e)}")
+            logger.error(CommandMessages.ERROR_START_LEARNING.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.STARTUP_FAILED.format(error=str(e)))
 
     @filter.command("stop_learning")
+    @filter.permission_type(PermissionType.ADMIN)
     async def stop_learning_command(self, event: AstrMessageEvent):
         """停止学习"""
         try:
@@ -347,29 +409,31 @@ class SelfLearningPlugin(star.Star):
             # 如果需要停止特定 group_id 的学习，ProgressiveLearningService 需要修改
             # 暂时调用全局停止，或者假设 stop_learning 会停止当前活跃的会话
             await self.progressive_learning.stop_learning()
-            yield event.plain_result(f"⏹️ 自动学习已停止 for group {group_id}")
+            yield event.plain_result(CommandMessages.LEARNING_STOPPED.format(group_id=group_id))
             
         except Exception as e:
-            logger.error(f"停止学习失败: {e}", exc_info=True)
-            yield event.plain_result(f"停止失败: {str(e)}")
+            logger.error(CommandMessages.ERROR_STOP_LEARNING.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.STOP_FAILED.format(error=str(e)))
 
     @filter.command("force_learning")  
+    @filter.permission_type(PermissionType.ADMIN)
     async def force_learning_command(self, event: AstrMessageEvent):
         """强制执行一次学习周期"""
         try:
             group_id = event.get_group_id() or event.get_sender_id()
-            yield event.plain_result(f"🔄 开始强制学习周期 for group {group_id}...")
+            yield event.plain_result(CommandMessages.FORCE_LEARNING_START.format(group_id=group_id))
             
             # 直接调用 ProgressiveLearningService 的批处理方法
             await self.progressive_learning._execute_learning_batch(group_id)
             
-            yield event.plain_result(f"✅ 强制学习周期完成 for group {group_id}")
+            yield event.plain_result(CommandMessages.FORCE_LEARNING_COMPLETE.format(group_id=group_id))
             
         except Exception as e:
-            logger.error(f"强制学习失败: {e}", exc_info=True)
-            yield event.plain_result(f"强制学习失败: {str(e)}")
+            logger.error(CommandMessages.ERROR_FORCE_LEARNING.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.ERROR_FORCE_LEARNING.format(error=str(e)))
 
     @filter.command("clear_data")
+    @filter.permission_type(PermissionType.ADMIN)
     async def clear_data_command(self, event: AstrMessageEvent):
         """清空学习数据"""
         try:
@@ -378,13 +442,14 @@ class SelfLearningPlugin(star.Star):
             # 重置统计
             self.learning_stats = LearningStats()
             
-            yield event.plain_result("🗑️ 所有学习数据已清空")
+            yield event.plain_result(CommandMessages.DATA_CLEARED)
             
         except Exception as e: # Consider more specific exceptions if possible
-            logger.error(f"清空数据失败: {e}", exc_info=True)
-            yield event.plain_result(f"清空数据失败: {str(e)}")
+            logger.error(CommandMessages.ERROR_CLEAR_DATA.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.ERROR_CLEAR_DATA.format(error=str(e)))
 
     @filter.command("export_data")
+    @filter.permission_type(PermissionType.ADMIN)
     async def export_data_command(self, event: AstrMessageEvent):
         """导出学习数据"""
         try:
@@ -392,17 +457,394 @@ class SelfLearningPlugin(star.Star):
             
             # 生成导出文件
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"learning_data_export_{timestamp}.json"
+            filename = FileNames.EXPORT_FILENAME_TEMPLATE.format(timestamp=timestamp)
             filepath = os.path.join(self.plugin_config.data_dir, filename)
             
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(export_data, f, ensure_ascii=False, indent=2)
                 
-            yield event.plain_result(f"📤 学习数据已导出到: {filepath}")
+            yield event.plain_result(CommandMessages.DATA_EXPORTED.format(filepath=filepath))
             
         except Exception as e: # Consider more specific exceptions if possible
-            logger.error(f"导出数据失败: {e}", exc_info=True)
-            yield event.plain_result(f"导出数据失败: {str(e)}")
+            logger.error(CommandMessages.ERROR_EXPORT_DATA.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.ERROR_EXPORT_DATA.format(error=str(e)))
+
+    @filter.command("affection_status")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def affection_status_command(self, event: AstrMessageEvent):
+        """查看好感度状态"""
+        try:
+            group_id = event.get_group_id() or event.get_sender_id()
+            user_id = event.get_sender_id()
+            
+            if not self.plugin_config.enable_affection_system:
+                yield event.plain_result(CommandMessages.AFFECTION_DISABLED)
+                return
+                
+            # 获取好感度状态
+            affection_status = await self.affection_manager.get_affection_status(group_id)
+            current_mood = await self.affection_manager.get_current_mood(group_id)
+            
+            # 获取用户个人好感度
+            user_affection = await self.db_manager.get_user_affection(group_id, user_id)
+            user_level = user_affection['affection_level'] if user_affection else 0
+            
+            status_info = CommandMessages.AFFECTION_STATUS_HEADER.format(group_id=group_id)
+            status_info += "\n\n" + CommandMessages.AFFECTION_USER_LEVEL.format(
+                user_level=user_level, max_affection=self.plugin_config.max_user_affection
+            )
+            status_info += "\n" + CommandMessages.AFFECTION_TOTAL_STATUS.format(
+                total_affection=affection_status['total_affection'],
+                max_total_affection=affection_status['max_total_affection']
+            )
+            status_info += "\n" + CommandMessages.AFFECTION_USER_COUNT.format(user_count=affection_status['user_count'])
+            status_info += "\n\n" + CommandMessages.AFFECTION_CURRENT_MOOD
+            
+            if current_mood:
+                mood_info = current_mood
+                status_info += "\n" + CommandMessages.AFFECTION_MOOD_TYPE.format(mood_type=mood_info.mood_type.value)
+                status_info += "\n" + CommandMessages.AFFECTION_MOOD_INTENSITY.format(intensity=mood_info.intensity)
+                status_info += "\n" + CommandMessages.AFFECTION_MOOD_DESCRIPTION.format(description=mood_info.description)
+            else:
+                status_info += "\n" + CommandMessages.AFFECTION_NO_MOOD
+                
+            if affection_status['top_users']:
+                status_info += "\n\n" + CommandMessages.AFFECTION_TOP_USERS
+                for i, user in enumerate(affection_status['top_users'][:3], 1):
+                    status_info += "\n" + CommandMessages.AFFECTION_USER_RANK.format(
+                        rank=i, user_id=user['user_id'], affection_level=user['affection_level']
+                    )
+            
+            yield event.plain_result(status_info)
+            
+        except Exception as e:
+            logger.error(CommandMessages.ERROR_GET_AFFECTION_STATUS.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.ERROR_GET_AFFECTION_STATUS.format(error=str(e)))
+
+    @filter.command("set_mood")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def set_mood_command(self, event: AstrMessageEvent):
+        """手动设置bot情绪（通过增量人格更新）"""
+        try:
+            if not self.plugin_config.enable_affection_system:
+                yield event.plain_result(CommandMessages.AFFECTION_DISABLED)
+                return
+                
+            args = event.get_message_str().split()[1:]  # 获取命令参数
+            if len(args) < 1:
+                yield event.plain_result("使用方法：/set_mood <mood_type>\n可用情绪: happy, sad, excited, calm, angry, anxious, playful, serious, nostalgic, curious")
+                return
+                
+            group_id = event.get_group_id() or event.get_sender_id()
+            mood_type = args[0].lower()
+            
+            # 验证情绪类型
+            valid_moods = {
+                'happy': '心情很好，说话比较活泼开朗，容易表达正面情感',
+                'sad': '心情有些低落，说话比较温和，需要更多的理解和安慰',
+                'excited': '很兴奋，说话比较有活力，对很多事情都很感兴趣',
+                'calm': '心情平静，说话比较稳重，给人安全感',
+                'angry': '心情不太好，说话可能比较直接，不太有耐心',
+                'anxious': '有些紧张不安，说话可能比较谨慎，需要更多确认',
+                'playful': '心情很调皮，喜欢开玩笑，说话比较幽默风趣',
+                'serious': '比较严肃认真，说话简洁直接，专注于重要的事情',
+                'nostalgic': '有些怀旧情绪，说话带有回忆色彩，比较感性',
+                'curious': '对很多事情都很好奇，喜欢提问和探索新事物'
+            }
+            
+            if mood_type not in valid_moods:
+                yield event.plain_result(f"❌ 无效的情绪类型。支持的情绪: {', '.join(valid_moods.keys())}")
+                return
+            
+            # 通过增量更新的方式设置情绪
+            mood_description = valid_moods[mood_type]
+            
+            # 统一使用apply_mood_based_persona_update方法，它会同时处理文件和prompt更新
+            persona_success = await self.temporary_persona_updater.apply_mood_based_persona_update(
+                group_id, mood_type, mood_description
+            )
+            
+            # 同时在affection_manager中记录情绪状态（但不重复添加到prompt）
+            from .services.affection_manager import MoodType
+            try:
+                mood_enum = MoodType(mood_type)
+                # 只记录到affection_manager的数据库，不更新prompt（避免重复）
+                await self.affection_manager.db_manager.save_bot_mood(
+                    group_id, mood_type, 0.7, mood_description, 
+                    self.plugin_config.mood_persistence_hours or 24
+                )
+                # 更新内存缓存
+                from .services.affection_manager import BotMood
+                import time
+                mood_obj = BotMood(
+                    mood_type=mood_enum,
+                    intensity=0.7,
+                    description=mood_description,
+                    start_time=time.time(),
+                    duration_hours=self.plugin_config.mood_persistence_hours or 24
+                )
+                self.affection_manager.current_moods[group_id] = mood_obj
+                affection_success = True
+            except Exception as e:
+                logger.warning(f"设置affection_manager情绪失败: {e}")
+                affection_success = False
+            
+            if persona_success:
+                status_msg = f"✅ 情绪状态已设置为: {mood_type}\n描述: {mood_description}"
+                if not affection_success:
+                    status_msg += "\n⚠️ 注意：情绪状态可能无法在状态查询中正确显示"
+                yield event.plain_result(status_msg)
+            else:
+                yield event.plain_result(f"❌ 设置情绪状态失败")
+            
+        except Exception as e:
+            logger.error(CommandMessages.ERROR_SET_MOOD.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.ERROR_SET_MOOD.format(error=str(e)))
+
+    @filter.command("analytics_report")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def analytics_report_command(self, event: AstrMessageEvent):
+        """生成数据分析报告"""
+        try:
+            group_id = event.get_group_id() or event.get_sender_id()
+            
+            yield event.plain_result(CommandMessages.ANALYTICS_GENERATING)
+            
+            # 生成学习轨迹图表
+            chart_data = await self.data_analytics.generate_learning_trajectory_chart(group_id)
+            
+            # 生成用户行为分析
+            behavior_analysis = await self.data_analytics.analyze_user_behavior_patterns(group_id)
+            
+            report_info = CommandMessages.ANALYTICS_REPORT_HEADER.format(group_id=group_id)
+            
+            report_info += CommandMessages.ANALYTICS_LEARNING_STATS.format(
+                total_messages=chart_data.get('total_messages', 0),
+                learning_sessions=chart_data.get('learning_sessions', 0),
+                avg_quality=chart_data.get('avg_quality', 0)
+            )
+            
+            report_info += CommandMessages.ANALYTICS_USER_BEHAVIOR.format(
+                active_users=len(behavior_analysis.get('user_patterns', {})),
+                main_topics=', '.join(behavior_analysis.get('common_topics', [])[:3]),
+                emotion_tendency=behavior_analysis.get('dominant_emotion', '中性')
+            )
+            
+            report_info += "\n\n" + CommandMessages.ANALYTICS_RECOMMENDATIONS.format(
+                recommendations=behavior_analysis.get('recommendations', '继续保持当前学习模式')
+            )
+            
+            yield event.plain_result(report_info)
+            
+        except Exception as e:
+            logger.error(CommandMessages.ERROR_ANALYTICS_REPORT.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.ERROR_ANALYTICS_REPORT.format(error=str(e)))
+
+    @filter.command("persona_switch")
+    async def persona_switch_command(self, event: AstrMessageEvent):
+        """切换人格模式"""
+        try:
+            args = event.get_message_str().split()[1:]  # 获取命令参数
+            if len(args) < 1:
+                yield event.plain_result(CommandMessages.PERSONA_SWITCH_USAGE)
+                return
+                
+            group_id = event.get_group_id() or event.get_sender_id()
+            persona_name = args[0]
+            
+            # 执行人格切换
+            success = await self.advanced_learning.switch_persona(group_id, persona_name)
+            
+            if success:
+                yield event.plain_result(CommandMessages.PERSONA_SWITCH_SUCCESS.format(persona_name=persona_name))
+            else:
+                yield event.plain_result(CommandMessages.PERSONA_SWITCH_FAILED)
+                
+        except Exception as e:
+            logger.error(CommandMessages.ERROR_PERSONA_SWITCH.format(error=e), exc_info=True)
+            yield event.plain_result(CommandMessages.ERROR_PERSONA_SWITCH.format(error=str(e)))
+
+    @filter.command("temp_persona")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def temp_persona_command(self, event: AstrMessageEvent):
+        """临时人格更新命令"""
+        try:
+            args = event.get_message_str().split()
+            if len(args) < 2:
+                yield event.plain_result("使用方法：/temp_persona <操作> [参数]\n操作：apply, status, remove, extend, backup_list, restore")
+                return
+            
+            operation = args[1].lower()
+            group_id = event.get_group_id() or event.get_sender_id()
+            
+            if operation == "apply":
+                # 应用临时人格: /temp_persona apply "特征1,特征2" "对话1|对话2" [持续时间分钟]
+                if len(args) < 4:
+                    yield event.plain_result("使用方法：/temp_persona apply \"特征1,特征2\" \"对话1|对话2\" [持续时间分钟]")
+                    return
+                
+                features_str = args[2].strip('"')
+                dialogs_str = args[3].strip('"')
+                duration = int(args[4]) if len(args) > 4 else 60
+                
+                features = [f.strip() for f in features_str.split(',') if f.strip()]
+                dialogs = [d.strip() for d in dialogs_str.split('|') if d.strip()]
+                
+                success = await self.temporary_persona_updater.apply_temporary_persona_update(
+                    group_id, features, dialogs, duration
+                )
+                
+                if success:
+                    yield event.plain_result(f"✅ 临时人格已应用，持续时间: {duration}分钟\n特征数量: {len(features)}\n对话数量: {len(dialogs)}")
+                else:
+                    yield event.plain_result("❌ 临时人格应用失败")
+            
+            elif operation == "status":
+                # 查看临时人格状态
+                status = await self.temporary_persona_updater.get_temporary_persona_status(group_id)
+                if status:
+                    remaining_minutes = status['remaining_seconds'] // 60
+                    yield event.plain_result(f"""📊 临时人格状态:
+                        人格名称: {status['persona_name']}
+                        剩余时间: {remaining_minutes}分钟
+                        特征数量: {status['features_count']}
+                        对话数量: {status['dialogs_count']}
+                        备份文件: {os.path.basename(status['backup_path'])}""")
+                else:
+                    yield event.plain_result("ℹ️ 当前没有活动的临时人格")
+            
+            elif operation == "remove":
+                # 移除临时人格
+                success = await self.temporary_persona_updater.remove_temporary_persona(group_id)
+                if success:
+                    yield event.plain_result("✅ 临时人格已移除，已恢复原始人格")
+                else:
+                    yield event.plain_result("ℹ️ 当前没有需要移除的临时人格")
+            
+            elif operation == "extend":
+                # 延长临时人格: /temp_persona extend [分钟数]
+                additional_minutes = int(args[2]) if len(args) > 2 else 30
+                success = await self.temporary_persona_updater.extend_temporary_persona(group_id, additional_minutes)
+                if success:
+                    yield event.plain_result(f"✅ 临时人格时间已延长 {additional_minutes} 分钟")
+                else:
+                    yield event.plain_result("❌ 延长临时人格失败，可能没有活动的临时人格")
+            
+            elif operation == "backup_list":
+                # 列出备份文件
+                backups = await self.temporary_persona_updater.list_persona_backups(group_id)
+                if backups:
+                    backup_info = "📋 人格备份文件列表:\n"
+                    for i, backup in enumerate(backups[:10], 1):  # 只显示前10个
+                        backup_info += f"{i}. {backup['filename']}\n"
+                        backup_info += f"   人格: {backup['persona_name']}\n"
+                        backup_info += f"   时间: {backup['backup_time'][:16]}\n"
+                        backup_info += f"   原因: {backup['backup_reason']}\n\n"
+                    yield event.plain_result(backup_info.strip())
+                else:
+                    yield event.plain_result("ℹ️ 没有找到备份文件")
+            
+            elif operation == "restore":
+                # 从备份恢复: /temp_persona restore [备份文件名]
+                if len(args) < 3:
+                    yield event.plain_result("请指定要恢复的备份文件名")
+                    return
+                
+                backup_filename = args[2]
+                backups = await self.temporary_persona_updater.list_persona_backups(group_id)
+                
+                target_backup = None
+                for backup in backups:
+                    if backup['filename'] == backup_filename:
+                        target_backup = backup
+                        break
+                
+                if target_backup:
+                    success = await self.temporary_persona_updater.restore_from_backup_file(
+                        group_id, target_backup['file_path']
+                    )
+                    if success:
+                        yield event.plain_result(f"✅ 人格已从备份恢复: {backup_filename}")
+                    else:
+                        yield event.plain_result(f"❌ 从备份恢复失败: {backup_filename}")
+                else:
+                    yield event.plain_result(f"❌ 找不到备份文件: {backup_filename}")
+            
+            else:
+                yield event.plain_result("❌ 无效的操作。支持的操作: apply, status, remove, extend, backup_list, restore")
+                
+        except Exception as e:
+            logger.error(f"临时人格命令执行失败: {e}", exc_info=True)
+            yield event.plain_result(f"临时人格命令执行失败: {str(e)}")
+
+
+    @filter.command("apply_persona_updates")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def apply_persona_updates_command(self, event: AstrMessageEvent):
+        """应用persona_updates.txt中的增量人格更新"""
+        try:
+            group_id = event.get_group_id() or event.get_sender_id()
+            
+            yield event.plain_result("🔄 开始应用增量人格更新...")
+            
+            # 调用临时人格更新器的方法
+            success = await self.temporary_persona_updater.read_and_apply_persona_updates(group_id)
+            
+            if success:
+                yield event.plain_result("✅ 增量人格更新应用成功！更新文件已清空，等待下次更新。")
+            else:
+                yield event.plain_result("ℹ️ 没有找到有效的人格更新内容，或更新应用失败。")
+                
+        except Exception as e:
+            logger.error(f"应用人格更新命令失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 应用人格更新失败: {str(e)}")
+
+    @filter.command("clean_duplicate_content")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def clean_duplicate_content_command(self, event: AstrMessageEvent):
+        """清理历史重复的情绪状态和增量更新内容"""
+        try:
+            group_id = event.get_group_id() or event.get_sender_id()
+            
+            yield event.plain_result("🧹 开始清理重复的历史内容...")
+            
+            # 获取provider
+            provider = self.context.get_using_provider()
+            if not provider or not hasattr(provider, 'curr_personality') or not provider.curr_personality:
+                yield event.plain_result("❌ 无法获取当前人格信息")
+                return
+            
+            # 获取当前prompt
+            current_prompt = provider.curr_personality.get('prompt', '')
+            if not current_prompt:
+                yield event.plain_result("ℹ️ 当前人格没有prompt内容")
+                return
+            
+            # 记录清理前的长度
+            original_length = len(current_prompt)
+            
+            # 使用清理函数
+            cleaned_prompt = self.temporary_persona_updater._clean_duplicate_content(current_prompt)
+            
+            # 更新prompt
+            provider.curr_personality['prompt'] = cleaned_prompt
+            
+            # 计算清理效果
+            cleaned_length = len(cleaned_prompt)
+            saved_chars = original_length - cleaned_length
+            
+            # 同时清理persona_updates.txt文件
+            await self.temporary_persona_updater.clear_persona_updates_file()
+            
+            yield event.plain_result(f"✅ 重复内容清理完成！\n"
+                                   f"📊 清理前长度: {original_length} 字符\n"
+                                   f"📊 清理后长度: {cleaned_length} 字符\n"
+                                   f"🗑️ 清理了 {saved_chars} 个重复字符\n"
+                                   f"🧹 同时清空了persona_updates.txt文件")
+                
+        except Exception as e:
+            logger.error(f"清理重复内容命令失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 清理重复内容失败: {str(e)}")
 
     async def terminate(self):
         """插件卸载时的清理工作"""
@@ -419,8 +861,16 @@ class SelfLearningPlugin(star.Star):
                 except asyncio.CancelledError:
                     pass # 任务已被取消，这是预期行为
                 except Exception as e:
-                    logger.error(f"取消后台任务时发生错误: {e}", exc_info=True)
+                    logger.error(LogMessages.BACKGROUND_TASK_CANCEL_ERROR.format(error=e), exc_info=True)
             
+            # 停止所有服务
+            if hasattr(self, 'factory_manager'):
+                await self.factory_manager.cleanup()
+            
+            # 清理临时人格
+            if hasattr(self, 'temporary_persona_updater'):
+                await self.temporary_persona_updater.cleanup_temp_personas()
+                
             # 保存最终状态
             if hasattr(self, 'message_collector'):
                 await self.message_collector.save_state()
@@ -433,9 +883,9 @@ class SelfLearningPlugin(star.Star):
             # 保存配置到文件
             with open(os.path.join(self.plugin_config.data_dir, 'config.json'), 'w', encoding='utf-8') as f:
                 json.dump(self.plugin_config.to_dict(), f, ensure_ascii=False, indent=2)
-            logger.info("插件配置已保存")
+            logger.info(LogMessages.PLUGIN_CONFIG_SAVED)
             
-            logger.info("自学习插件已安全卸载")
+            logger.info(LogMessages.PLUGIN_UNLOAD_SUCCESS)
             
         except Exception as e: # Consider more specific exceptions if possible
-            logger.error(f"插件卸载清理失败: {e}", exc_info=True)
+            logger.error(LogMessages.PLUGIN_UNLOAD_CLEANUP_FAILED.format(error=e), exc_info=True)

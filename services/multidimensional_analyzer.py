@@ -202,22 +202,25 @@ class MultidimensionalAnalyzer:
                 model_name=self.config.refine_model_name
             )
             if response and response.text():
-                try:
-                    scores = json.loads(response.text().strip())
+                # 使用安全的JSON解析方法
+                default_scores = {
+                    "content_quality": 0.5,
+                    "relevance": 0.5,
+                    "emotional_positivity": 0.5,
+                    "interactivity": 0.5,
+                    "learning_value": 0.5
+                }
+                
+                scores = self._safe_parse_llm_json(response.text(), fallback_result=default_scores)
+                
+                if scores and isinstance(scores, dict):
                     # 确保所有分数都在0-1之间
                     for key, value in scores.items():
                         scores[key] = max(0.0, min(float(value), 1.0))
                     logger.debug(f"消息多维度评分: {scores}")
                     return scores
-                except json.JSONDecodeError:
-                    logger.warning(f"LLM多维度评分响应JSON解析失败，返回默认评分。响应内容: {response.text()}")
-                    return {
-                        "content_quality": 0.5,
-                        "relevance": 0.5,
-                        "emotional_positivity": 0.5,
-                        "interactivity": 0.5,
-                        "learning_value": 0.5
-                    }
+                else:
+                    return default_scores
             logger.warning(f"LLM多维度评分模型未返回有效响应，返回默认评分。")
             return {
                 "content_quality": 0.5,
@@ -239,6 +242,11 @@ class MultidimensionalAnalyzer:
     async def analyze_message_context(self, event: AstrMessageEvent, message_text: str) -> Dict[str, Any]:
         """分析消息的多维度上下文"""
         try:
+            # 检查event是否为None
+            if event is None:
+                logger.info("使用简化分析方式（无event对象）")
+                return await self._analyze_message_context_without_event(message_text)
+            
             sender_id = event.get_sender_id()
             sender_name = event.get_sender_name()
             group_id = event.get_group_id()
@@ -276,6 +284,59 @@ class MultidimensionalAnalyzer:
         except Exception as e:
             logger.error(f"多维度上下文分析失败: {e}")
             return {}
+
+    async def _analyze_message_context_without_event(self, message_text: str) -> Dict[str, Any]:
+        """在没有event对象时分析消息上下文（简化版本）"""
+        try:
+            # 分析话题偏好
+            topic_context = await self._analyze_topic_context(message_text)
+            
+            # 分析情感倾向
+            emotional_context = await self._analyze_emotional_context(message_text)
+            
+            # 分析沟通风格
+            style_context = await self._analyze_communication_style(message_text)
+            
+            # 计算基础相关性得分
+            contextual_relevance = await self._calculate_basic_relevance(message_text)
+            
+            return {
+                'user_profile': {},
+                'social_context': {},
+                'topic_context': topic_context,
+                'emotional_context': emotional_context,
+                'temporal_context': {},
+                'style_context': style_context,
+                'contextual_relevance': contextual_relevance
+            }
+            
+        except Exception as e:
+            logger.error(f"简化上下文分析失败: {e}")
+            return {
+                'user_profile': {},
+                'social_context': {},
+                'topic_context': {},
+                'emotional_context': {},
+                'temporal_context': {},
+                'style_context': {},
+                'contextual_relevance': 0.5  # 默认中等相关性
+            }
+
+    async def _calculate_basic_relevance(self, message_text: str) -> float:
+        """计算基础相关性得分"""
+        try:
+            # 基于消息长度和内容质量的简单评分
+            message_length = len(message_text.strip())
+            if message_length < 5:
+                return 0.2
+            elif message_length < 20:
+                return 0.4
+            elif message_length < 50:
+                return 0.6
+            else:
+                return 0.8
+        except Exception:
+            return 0.5
 
     async def _update_user_profile(self, group_id: str, qq_id: str, qq_name: str, message_text: str, event: AstrMessageEvent):
         """更新用户画像并持久化"""
@@ -404,14 +465,18 @@ class MultidimensionalAnalyzer:
                 )
                 
                 if response and response.text():
-                    try:
-                        emotion_scores = json.loads(response.text().strip())
+                    # 使用安全的JSON解析方法
+                    emotion_scores = self._safe_parse_llm_json(
+                        response.text(), 
+                        fallback_result=self._simple_emotional_analysis(message_text)
+                    )
+                    
+                    if emotion_scores and isinstance(emotion_scores, dict):
                         # 确保所有分数都在0-1之间
                         for key, value in emotion_scores.items():
                             emotion_scores[key] = max(0.0, min(float(value), 1.0))
                         return emotion_scores
-                    except json.JSONDecodeError:
-                        logger.warning(f"LLM响应JSON解析失败，返回简化情感分析。响应内容: {response.text()}")
+                    else:
                         return self._simple_emotional_analysis(message_text)
                 return self._simple_emotional_analysis(message_text)
                 
@@ -419,6 +484,59 @@ class MultidimensionalAnalyzer:
                 logger.warning(f"LLM情感分析失败，使用简化算法: {e}")
         except Exception as e:
             logger.warning(f"LLM情感分析失败 - 2，使用简化算法: {e}")
+
+    def _safe_parse_llm_json(self, response_text: str, fallback_result: Any = None) -> Any:
+        """
+        安全解析LLM响应中的JSON，处理markdown代码块和额外文本
+        
+        Args:
+            response_text: LLM的原始响应文本
+            fallback_result: 解析失败时的备用结果
+            
+        Returns:
+            解析成功的JSON对象，或者备用结果
+        """
+        try:
+            # 清理响应文本
+            cleaned_text = response_text.strip()
+            
+            # 去除markdown代码块标记
+            if cleaned_text.startswith("```json"):
+                cleaned_text = cleaned_text[7:]
+            elif cleaned_text.startswith("```"):
+                cleaned_text = cleaned_text[3:]
+            
+            if cleaned_text.endswith("```"):
+                cleaned_text = cleaned_text[:-3]
+            
+            cleaned_text = cleaned_text.strip()
+            
+            # 寻找JSON对象的开始和结束位置
+            json_start = cleaned_text.find('{')
+            json_end = cleaned_text.rfind('}')
+            
+            if json_start != -1 and json_end != -1 and json_end > json_start:
+                # 提取JSON部分
+                json_text = cleaned_text[json_start:json_end+1]
+                return json.loads(json_text)
+            else:
+                # 如果找不到JSON对象，尝试寻找数组
+                array_start = cleaned_text.find('[')
+                array_end = cleaned_text.rfind(']')
+                
+                if array_start != -1 and array_end != -1 and array_end > array_start:
+                    json_text = cleaned_text[array_start:array_end+1]
+                    return json.loads(json_text)
+                else:
+                    # 最后尝试直接解析整个清理后的文本
+                    return json.loads(cleaned_text)
+                    
+        except json.JSONDecodeError as e:
+            logger.debug(f"JSON解析失败: {e}，原始响应: {response_text[:200]}...")
+            return fallback_result
+        except Exception as e:
+            logger.warning(f"JSON解析异常: {e}")
+            return fallback_result
 
 
     def _simple_emotional_analysis(self, message_text: str) -> Dict[str, float]:

@@ -134,13 +134,18 @@ class MessageCollectorService:
             logger.error(f"获取最近筛选消息失败: {e}")
             return []
 
-    async def get_statistics(self) -> Dict[str, Any]:
+    async def get_statistics(self, group_id: Optional[str] = None) -> Dict[str, Any]:
         """获取收集统计信息"""
         try:
             # 先刷新缓存
             await self._flush_message_cache()
             
-            statistics = await self.database_manager.get_messages_statistics()
+            # 如果指定了group_id，获取特定群组的统计信息
+            if group_id:
+                statistics = await self.database_manager.get_group_messages_statistics(group_id)
+            else:
+                statistics = await self.database_manager.get_messages_statistics()
+            
             statistics['cache_size'] = len(self._message_cache) # 缓存大小仍然由 MessageCollectorService 管理
             return statistics
             

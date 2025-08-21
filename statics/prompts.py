@@ -288,3 +288,72 @@ MESSAGE_FILTER_SUITABLE_FOR_LEARNING_PROMPT = """
 INTELLIGENT_RESPONDER_DEFAULT_PERSONA_PROMPT = """
 
 """
+
+# learning_quality_monitor.py 中缺失的 prompt
+LEARNING_QUALITY_MONITOR_EMOTIONAL_BALANCE_PROMPT = """
+请分析以下学习批次中消息的情感平衡性。评估消息集合在情感维度上是否多样化和平衡。
+
+消息批次数据：
+{batch_messages}
+
+请从以下维度分析：
+1. 情感多样性 - 包含多种情感表达（积极、消极、中性）
+2. 情感强度分布 - 强烈情感与温和情感的平衡
+3. 情感稳定性 - 情感表达是否合理稳定
+4. 学习价值 - 这种情感平衡对人格学习是否有价值
+
+请以JSON格式返回分析结果：
+{{
+    "emotional_diversity": 0.0-1.0,  // 情感多样性得分
+    "intensity_balance": 0.0-1.0,    // 强度平衡得分
+    "emotional_stability": 0.0-1.0,   // 情感稳定性得分
+    "learning_value": 0.0-1.0,       // 学习价值得分
+    "overall_balance": 0.0-1.0,      // 总体情感平衡得分
+    "analysis_summary": "分析总结"
+}}
+"""
+
+LEARNING_QUALITY_MONITOR_CONSISTENCY_PROMPT = """
+请分析以下两个人格描述之间的一致性程度，评估人格更新前后的连贯性和兼容性。
+
+原始人格描述：
+{original_persona_prompt}
+
+更新后人格描述：
+{updated_persona_prompt}
+
+请从以下维度评估一致性：
+1. 核心价值观和性格特征是否保持
+2. 语言风格和表达习惯是否延续
+3. 兴趣爱好和知识领域是否兼容
+4. 行为模式和互动方式是否协调
+5. 整体人格形象是否和谐统一
+
+请返回一个0-1之间的一致性得分，0表示完全不一致，1表示完全一致。
+只返回数值，不需要其他解释。
+"""
+
+# progressive_learning.py 中的 prompt
+PROGRESSIVE_LEARNING_GENERATE_UPDATED_PERSONA_PROMPT = """
+基于当前人格和风格分析结果，生成更新后的人格描述。
+
+当前人格信息：
+{current_persona_json}
+
+风格分析结果：
+{style_analysis_json}
+
+请根据风格分析结果对人格进行渐进式更新，确保：
+1. 保持核心人格特征不变
+2. 根据风格分析适当调整表达方式
+3. 增强与分析结果匹配的特征
+4. 保持整体人格的一致性和连贯性
+
+请以JSON格式返回更新后的完整人格信息：
+{{
+    "name": "更新后的人格名称",
+    "prompt": "更新后的完整人格描述",
+    "begin_dialogs": ["开场对话列表"],
+    "mood_imitation_dialogs": ["情绪模拟对话列表"]
+}}
+"""

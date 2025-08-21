@@ -101,6 +101,7 @@ class DatabaseManager(AsyncServiceBase):
                     raw_message_id INTEGER,
                     message TEXT NOT NULL,
                     sender_id TEXT,
+                    group_id TEXT,
                     confidence REAL,
                     filter_reason TEXT,
                     timestamp REAL NOT NULL,
@@ -118,14 +119,22 @@ class DatabaseManager(AsyncServiceBase):
             if 'quality_scores' not in columns:
                 await cursor.execute("ALTER TABLE filtered_messages ADD COLUMN quality_scores TEXT")
                 logger.info("已为 filtered_messages 表添加 quality_scores 列。")
+            
+            # 检查并添加 group_id 列（如果不存在）
+            if 'group_id' not in columns:
+                await cursor.execute("ALTER TABLE filtered_messages ADD COLUMN group_id TEXT")
+                logger.info("已为 filtered_messages 表添加 group_id 列。")
 
             # 创建学习批次表
             await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS learning_batches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT NOT NULL,
+                    start_time REAL NOT NULL,
+                    end_time REAL,
+                    quality_score REAL DEFAULT 0.5,
+                    processed_messages INTEGER DEFAULT 0,
                     batch_name TEXT UNIQUE,
-                    start_time DATETIME,
-                    end_time DATETIME,
                     message_count INTEGER,
                     filtered_count INTEGER,
                     success BOOLEAN,
@@ -249,6 +258,9 @@ class DatabaseManager(AsyncServiceBase):
                 CREATE TABLE IF NOT EXISTS persona_backups (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     backup_name TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    reason TEXT,
+                    persona_config TEXT, -- JSON格式存储人格配置
                     original_persona TEXT, -- JSON格式存储
                     imitation_dialogues TEXT, -- JSON格式存储模仿对话
                     backup_reason TEXT,
@@ -277,6 +289,52 @@ class DatabaseManager(AsyncServiceBase):
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_social_relations_to_user ON social_relations(to_user)') 
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_profiles_active ON user_profiles(last_active)') 
             await cursor.execute('CREATE INDEX IF NOT EXISTS idx_style_profiles_name ON style_profiles(profile_name)')
+            
+            # 创建好感度表
+            await cursor.execute(''' 
+                CREATE TABLE IF NOT EXISTS user_affection (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    affection_level INTEGER DEFAULT 0,
+                    last_interaction REAL NOT NULL,
+                    last_updated REAL NOT NULL,
+                    interaction_count INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, group_id)
+                )
+            ''')
+            
+            # 创建bot情绪表
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bot_mood (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT NOT NULL,
+                    mood_type TEXT NOT NULL,
+                    mood_intensity REAL DEFAULT 0.5,
+                    mood_description TEXT,
+                    start_time REAL NOT NULL,
+                    end_time REAL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 创建好感度变化记录表
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS affection_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    change_amount INTEGER NOT NULL,
+                    previous_level INTEGER NOT NULL,
+                    new_level INTEGER NOT NULL,
+                    change_reason TEXT,
+                    bot_mood TEXT,
+                    timestamp REAL NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             
             await conn.commit() 
             logger.debug("群数据库表结构初始化完成") 
@@ -455,6 +513,317 @@ class DatabaseManager(AsyncServiceBase):
             logger.error(f"保存原始消息失败: {e}", exc_info=True)
             raise DataStorageError(f"保存原始消息失败: {str(e)}")
 
+    async def get_unprocessed_messages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        获取未处理的原始消息
+        
+        Args:
+            limit: 限制返回的消息数量
+            
+        Returns:
+            未处理的消息列表
+        """
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            if limit:
+                await cursor.execute('''
+                    SELECT id, sender_id, sender_name, message, group_id, platform, timestamp
+                    FROM raw_messages 
+                    WHERE processed = FALSE 
+                    ORDER BY timestamp ASC 
+                    LIMIT ?
+                ''', (limit,))
+            else:
+                await cursor.execute('''
+                    SELECT id, sender_id, sender_name, message, group_id, platform, timestamp
+                    FROM raw_messages 
+                    WHERE processed = FALSE 
+                    ORDER BY timestamp ASC
+                ''')
+            
+            messages = []
+            for row in await cursor.fetchall():
+                messages.append({
+                    'id': row[0],
+                    'sender_id': row[1],
+                    'sender_name': row[2],
+                    'message': row[3],
+                    'group_id': row[4],
+                    'platform': row[5],
+                    'timestamp': row[6]
+                })
+            
+            logger.debug(f"获取到 {len(messages)} 条未处理消息")
+            return messages
+            
+        except aiosqlite.Error as e:
+            logger.error(f"获取未处理消息失败: {e}", exc_info=True)
+            raise DataStorageError(f"获取未处理消息失败: {str(e)}")
+
+    async def mark_messages_processed(self, message_ids: List[int]) -> bool:
+        """
+        标记消息为已处理
+        
+        Args:
+            message_ids: 消息ID列表
+            
+        Returns:
+            是否成功标记
+        """
+        if not message_ids:
+            return True
+            
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            # 批量更新消息状态
+            placeholders = ','.join(['?' for _ in message_ids])
+            await cursor.execute(f'''
+                UPDATE raw_messages 
+                SET processed = TRUE 
+                WHERE id IN ({placeholders})
+            ''', message_ids)
+            
+            await conn.commit()
+            logger.debug(f"已标记 {len(message_ids)} 条消息为已处理")
+            return True
+            
+        except aiosqlite.Error as e:
+            logger.error(f"标记消息处理状态失败: {e}", exc_info=True)
+            raise DataStorageError(f"标记消息处理状态失败: {str(e)}")
+
+    async def add_filtered_message(self, filtered_data: Dict[str, Any]) -> int:
+        """
+        添加筛选后的消息
+        
+        Args:
+            filtered_data: 筛选后的消息数据
+            
+        Returns:
+            筛选消息的ID
+        """
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                INSERT INTO filtered_messages 
+                (raw_message_id, message, sender_id, confidence, filter_reason, timestamp, quality_scores, group_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                filtered_data.get('raw_message_id'),
+                filtered_data.get('message'),
+                filtered_data.get('sender_id'),
+                filtered_data.get('confidence', 0.8),
+                filtered_data.get('filter_reason', ''),
+                filtered_data.get('timestamp', time.time()),
+                json.dumps(filtered_data.get('quality_scores', {}), ensure_ascii=False),
+                filtered_data.get('group_id')
+            ))
+            
+            filtered_id = cursor.lastrowid
+            await conn.commit()
+            logger.debug(f"筛选消息已保存，ID: {filtered_id}")
+            return filtered_id
+            
+        except aiosqlite.Error as e:
+            logger.error(f"添加筛选消息失败: {e}", exc_info=True)
+            raise DataStorageError(f"添加筛选消息失败: {str(e)}")
+
+    async def get_filtered_messages_for_learning(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        获取用于学习的筛选消息
+        
+        Args:
+            limit: 限制返回的消息数量
+            
+        Returns:
+            筛选消息列表
+        """
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            if limit:
+                await cursor.execute('''
+                    SELECT id, message, sender_id, confidence, quality_scores, timestamp, group_id
+                    FROM filtered_messages 
+                    WHERE used_for_learning = FALSE 
+                    ORDER BY timestamp DESC 
+                    LIMIT ?
+                ''', (limit,))
+            else:
+                await cursor.execute('''
+                    SELECT id, message, sender_id, confidence, quality_scores, timestamp, group_id
+                    FROM filtered_messages 
+                    WHERE used_for_learning = FALSE 
+                    ORDER BY timestamp DESC
+                ''')
+            
+            messages = []
+            for row in await cursor.fetchall():
+                quality_scores = {}
+                try:
+                    if row[4]:  # quality_scores
+                        quality_scores = json.loads(row[4])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                
+                messages.append({
+                    'id': row[0],
+                    'message': row[1],
+                    'sender_id': row[2],
+                    'confidence': row[3],
+                    'quality_scores': quality_scores,
+                    'timestamp': row[5],
+                    'group_id': row[6]
+                })
+            
+            return messages
+            
+        except aiosqlite.Error as e:
+            logger.error(f"获取学习消息失败: {e}", exc_info=True)
+            raise DataStorageError(f"获取学习消息失败: {str(e)}")
+
+    async def get_recent_filtered_messages(self, group_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        获取指定群组最近的筛选消息
+        
+        Args:
+            group_id: 群组ID
+            limit: 消息数量限制
+            
+        Returns:
+            筛选消息列表
+        """
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT id, message, sender_id, confidence, quality_scores, timestamp
+                FROM filtered_messages 
+                WHERE group_id = ? 
+                ORDER BY timestamp DESC 
+                LIMIT ?
+            ''', (group_id, limit))
+            
+            messages = []
+            for row in await cursor.fetchall():
+                quality_scores = {}
+                try:
+                    if row[4]:  # quality_scores
+                        quality_scores = json.loads(row[4])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                
+                messages.append({
+                    'id': row[0],
+                    'message': row[1],
+                    'sender_id': row[2],
+                    'confidence': row[3],
+                    'quality_scores': quality_scores,
+                    'timestamp': row[5]
+                })
+            
+            return messages
+            
+        except aiosqlite.Error as e:
+            logger.error(f"获取最近筛选消息失败: {e}", exc_info=True)
+            return []
+
+    async def get_messages_statistics(self) -> Dict[str, Any]:
+        """
+        获取消息统计信息
+        
+        Returns:
+            统计信息字典
+        """
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            # 获取原始消息统计
+            await cursor.execute('SELECT COUNT(*) FROM raw_messages')
+            total_messages = (await cursor.fetchone())[0]
+            
+            await cursor.execute('SELECT COUNT(*) FROM raw_messages WHERE processed = FALSE')
+            unprocessed_messages = (await cursor.fetchone())[0]
+            
+            # 获取筛选消息统计
+            await cursor.execute('SELECT COUNT(*) FROM filtered_messages')
+            filtered_messages = (await cursor.fetchone())[0]
+            
+            await cursor.execute('SELECT COUNT(*) FROM filtered_messages WHERE used_for_learning = FALSE')
+            unused_filtered_messages = (await cursor.fetchone())[0]
+            
+            return {
+                'total_messages': total_messages,
+                'unprocessed_messages': unprocessed_messages,
+                'filtered_messages': filtered_messages,
+                'unused_filtered_messages': unused_filtered_messages,
+                'raw_messages': total_messages  # 兼容旧接口
+            }
+            
+        except aiosqlite.Error as e:
+            logger.error(f"获取消息统计失败: {e}", exc_info=True)
+            return {
+                'total_messages': 0,
+                'unprocessed_messages': 0,
+                'filtered_messages': 0,
+                'unused_filtered_messages': 0,
+                'raw_messages': 0
+            }
+
+    async def get_group_messages_statistics(self, group_id: str) -> Dict[str, Any]:
+        """
+        获取指定群组的消息统计信息
+        
+        Args:
+            group_id: 群组ID
+            
+        Returns:
+            统计信息字典
+        """
+        conn = await self._get_messages_db_connection()
+        cursor = await conn.cursor()
+        
+        try:
+            # 获取原始消息统计
+            await cursor.execute('SELECT COUNT(*) FROM raw_messages WHERE group_id = ?', (group_id,))
+            total_messages = (await cursor.fetchone())[0]
+            
+            await cursor.execute('SELECT COUNT(*) FROM raw_messages WHERE group_id = ? AND processed = FALSE', (group_id,))
+            unprocessed_messages = (await cursor.fetchone())[0]
+            
+            # 获取筛选消息统计
+            await cursor.execute('SELECT COUNT(*) FROM filtered_messages WHERE group_id = ?', (group_id,))
+            filtered_messages = (await cursor.fetchone())[0]
+            
+            await cursor.execute('SELECT COUNT(*) FROM filtered_messages WHERE group_id = ? AND used_for_learning = FALSE', (group_id,))
+            unused_filtered_messages = (await cursor.fetchone())[0]
+            
+            return {
+                'total_messages': total_messages,
+                'unprocessed_messages': unprocessed_messages,
+                'filtered_messages': filtered_messages,
+                'unused_filtered_messages': unused_filtered_messages,
+                'raw_messages': total_messages  # 兼容旧接口
+            }
+            
+        except aiosqlite.Error as e:
+            logger.error(f"获取群组消息统计失败: {e}", exc_info=True)
+            return {
+                'total_messages': 0,
+                'unprocessed_messages': 0,
+                'filtered_messages': 0,
+                'unused_filtered_messages': 0,
+                'raw_messages': 0
+            }
+
     async def load_social_graph(self, group_id: str) -> List[Dict[str, Any]]:
         """加载完整社交图谱"""
         conn = await self.get_group_connection(group_id)
@@ -525,11 +894,15 @@ class DatabaseManager(AsyncServiceBase):
         cursor = await conn.cursor()
         
         try:
+            # 获取当前时间戳
+            current_timestamp = time.time()
+            
             await cursor.execute(''' 
-                INSERT INTO persona_backups (backup_name, original_persona, imitation_dialogues, backup_reason)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO persona_backups (backup_name, timestamp, original_persona, imitation_dialogues, backup_reason)
+                VALUES (?, ?, ?, ?, ?)
             ''', (
                 backup_data['backup_name'],
+                current_timestamp,
                 json.dumps(backup_data['original_persona'], ensure_ascii=False),
                 json.dumps(backup_data.get('imitation_dialogues', []), ensure_ascii=False),
                 backup_data.get('backup_reason', 'Auto backup before update')
@@ -677,3 +1050,586 @@ class DatabaseManager(AsyncServiceBase):
         except aiosqlite.Error as e:
             logger.error(f"更新人格更新记录状态失败: {e}", exc_info=True)
             raise DataStorageError(f"更新人格更新记录状态失败: {str(e)}")
+
+    # ========== 高级功能数据库操作方法 ==========
+
+    async def save_emotion_profile(self, group_id: str, user_id: str, profile_data: Dict[str, Any]) -> bool:
+        """保存情感档案"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            # 检查是否已存在表，如果不存在则创建
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS emotion_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    dominant_emotions TEXT, -- JSON格式
+                    emotion_patterns TEXT, -- JSON格式
+                    empathy_level REAL DEFAULT 0.5,
+                    emotional_stability REAL DEFAULT 0.5,
+                    last_updated REAL NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, group_id)
+                )
+            ''')
+            
+            await cursor.execute('''
+                INSERT OR REPLACE INTO emotion_profiles 
+                (user_id, group_id, dominant_emotions, emotion_patterns, empathy_level, emotional_stability, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_id,
+                group_id,
+                json.dumps(profile_data.get('dominant_emotions', {}), ensure_ascii=False),
+                json.dumps(profile_data.get('emotion_patterns', {}), ensure_ascii=False),
+                profile_data.get('empathy_level', 0.5),
+                profile_data.get('emotional_stability', 0.5),
+                profile_data.get('last_updated', time.time())
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            self._logger.error(f"保存情感档案失败: {e}")
+            return False
+
+    async def load_emotion_profile(self, group_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """加载情感档案"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT dominant_emotions, emotion_patterns, empathy_level, emotional_stability, last_updated
+                FROM emotion_profiles WHERE user_id = ? AND group_id = ?
+            ''', (user_id, group_id))
+            
+            row = await cursor.fetchone()
+            if not row:
+                return None
+                
+            return {
+                'user_id': user_id,
+                'group_id': group_id,
+                'dominant_emotions': json.loads(row[0]) if row[0] else {},
+                'emotion_patterns': json.loads(row[1]) if row[1] else {},
+                'empathy_level': row[2],
+                'emotional_stability': row[3],
+                'last_updated': row[4]
+            }
+            
+        except Exception as e:
+            self._logger.error(f"加载情感档案失败: {e}")
+            return None
+
+    async def save_knowledge_entity(self, group_id: str, entity_data: Dict[str, Any]) -> bool:
+        """保存知识实体"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            # 检查是否已存在表，如果不存在则创建
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS knowledge_entities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    attributes TEXT, -- JSON格式
+                    relationships TEXT, -- JSON格式
+                    confidence REAL DEFAULT 0.5,
+                    source_messages TEXT, -- JSON格式
+                    last_mentioned REAL NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await cursor.execute('''
+                INSERT OR REPLACE INTO knowledge_entities 
+                (entity_id, name, entity_type, attributes, relationships, confidence, source_messages, last_mentioned)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                entity_data.get('entity_id'),
+                entity_data.get('name', ''),
+                entity_data.get('entity_type', 'unknown'),
+                json.dumps(entity_data.get('attributes', {}), ensure_ascii=False),
+                json.dumps(entity_data.get('relationships', []), ensure_ascii=False),
+                entity_data.get('confidence', 0.5),
+                json.dumps(entity_data.get('source_messages', []), ensure_ascii=False),
+                entity_data.get('last_mentioned', time.time())
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            self._logger.error(f"保存知识实体失败: {e}")
+            return False
+
+    async def get_knowledge_entities(self, group_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """获取知识实体列表"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT entity_id, name, entity_type, attributes, relationships, confidence, source_messages, last_mentioned
+                FROM knowledge_entities 
+                ORDER BY last_mentioned DESC
+                LIMIT ?
+            ''', (limit,))
+            
+            entities = []
+            for row in await cursor.fetchall():
+                entities.append({
+                    'entity_id': row[0],
+                    'name': row[1],
+                    'entity_type': row[2],
+                    'attributes': json.loads(row[3]) if row[3] else {},
+                    'relationships': json.loads(row[4]) if row[4] else [],
+                    'confidence': row[5],
+                    'source_messages': json.loads(row[6]) if row[6] else [],
+                    'last_mentioned': row[7]
+                })
+            
+            return entities
+            
+        except Exception as e:
+            self._logger.error(f"获取知识实体失败: {e}")
+            return []
+
+    async def save_user_preferences(self, group_id: str, user_id: str, preferences: Dict[str, Any]) -> bool:
+        """保存用户偏好设置"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            # 检查是否已存在表，如果不存在则创建
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    favorite_topics TEXT, -- JSON格式
+                    interaction_style TEXT, -- JSON格式
+                    learning_preferences TEXT, -- JSON格式
+                    adaptive_rate REAL DEFAULT 0.5,
+                    updated_at REAL NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, group_id)
+                )
+            ''')
+            
+            await cursor.execute('''
+                INSERT OR REPLACE INTO user_preferences 
+                (user_id, group_id, favorite_topics, interaction_style, learning_preferences, adaptive_rate, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_id,
+                group_id,
+                json.dumps(preferences.get('favorite_topics', []), ensure_ascii=False),
+                json.dumps(preferences.get('interaction_style', {}), ensure_ascii=False),
+                json.dumps(preferences.get('learning_preferences', {}), ensure_ascii=False),
+                preferences.get('adaptive_rate', 0.5),
+                time.time()
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            self._logger.error(f"保存用户偏好失败: {e}")
+            return False
+
+    async def load_user_preferences(self, group_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """加载用户偏好设置"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT favorite_topics, interaction_style, learning_preferences, adaptive_rate, updated_at
+                FROM user_preferences WHERE user_id = ? AND group_id = ?
+            ''', (user_id, group_id))
+            
+            row = await cursor.fetchone()
+            if not row:
+                return None
+                
+            return {
+                'favorite_topics': json.loads(row[0]) if row[0] else [],
+                'interaction_style': json.loads(row[1]) if row[1] else {},
+                'learning_preferences': json.loads(row[2]) if row[2] else {},
+                'adaptive_rate': row[3],
+                'updated_at': row[4]
+            }
+            
+        except Exception as e:
+            self._logger.error(f"加载用户偏好失败: {e}")
+            return None
+
+    async def save_conversation_context(self, group_id: str, context_data: Dict[str, Any]) -> bool:
+        """保存对话上下文"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            # 检查是否已存在表，如果不存在则创建
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS conversation_contexts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT NOT NULL,
+                    context_id TEXT UNIQUE NOT NULL,
+                    participants TEXT, -- JSON格式存储参与者列表
+                    current_topic TEXT,
+                    emotion_state TEXT, -- JSON格式存储情感状态
+                    context_messages TEXT, -- JSON格式存储上下文消息
+                    start_time REAL NOT NULL,
+                    last_updated REAL NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await cursor.execute('''
+                INSERT OR REPLACE INTO conversation_contexts 
+                (group_id, context_id, participants, current_topic, emotion_state, context_messages, start_time, last_updated, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                group_id,
+                context_data.get('context_id'),
+                json.dumps(list(context_data.get('participants', set())), ensure_ascii=False),
+                context_data.get('current_topic'),
+                json.dumps(context_data.get('emotion_state', {}), ensure_ascii=False),
+                json.dumps(context_data.get('messages', []), ensure_ascii=False),
+                context_data.get('start_time', time.time()),
+                time.time(),
+                context_data.get('is_active', True)
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            self._logger.error(f"保存对话上下文失败: {e}")
+            return False
+
+    async def get_active_conversation_contexts(self, group_id: str) -> List[Dict[str, Any]]:
+        """获取活跃的对话上下文"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT context_id, participants, current_topic, emotion_state, context_messages, start_time, last_updated
+                FROM conversation_contexts 
+                WHERE group_id = ? AND is_active = TRUE
+                ORDER BY last_updated DESC
+            ''', (group_id,))
+            
+            contexts = []
+            for row in await cursor.fetchall():
+                contexts.append({
+                    'context_id': row[0],
+                    'participants': set(json.loads(row[1])) if row[1] else set(),
+                    'current_topic': row[2],
+                    'emotion_state': json.loads(row[3]) if row[3] else {},
+                    'messages': json.loads(row[4]) if row[4] else [],
+                    'start_time': row[5],
+                    'last_updated': row[6]
+                })
+            
+            return contexts
+            
+        except Exception as e:
+            self._logger.error(f"获取对话上下文失败: {e}")
+            return []
+
+    async def save_learning_session_record(self, group_id: str, session_data: Dict[str, Any]) -> bool:
+        """保存学习会话记录"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                INSERT OR REPLACE INTO learning_sessions
+                (session_id, start_time, end_time, messages_processed, filtered_messages, 
+                 style_updates, quality_score, success)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                session_data.get('session_id'),
+                session_data.get('start_time'),
+                session_data.get('end_time'),
+                session_data.get('messages_processed', 0),
+                session_data.get('filtered_messages', 0),
+                session_data.get('style_updates', 0),
+                session_data.get('quality_score', 0.0),
+                session_data.get('success', False)
+            ))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            self._logger.error(f"保存学习会话记录失败: {e}")
+            return False
+
+    async def get_recent_learning_sessions(self, group_id: str, days: int = 7) -> List[Dict[str, Any]]:
+        """获取最近的学习会话记录"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            start_time = time.time() - (days * 24 * 3600)
+            
+            await cursor.execute('''
+                SELECT session_id, start_time, end_time, messages_processed, filtered_messages,
+                       style_updates, quality_score, success
+                FROM learning_sessions 
+                WHERE start_time >= ?
+                ORDER BY start_time DESC
+            ''', (start_time,))
+            
+            sessions = []
+            for row in await cursor.fetchall():
+                sessions.append({
+                    'session_id': row[0],
+                    'start_time': row[1],
+                    'end_time': row[2],
+                    'messages_processed': row[3],
+                    'filtered_messages': row[4],
+                    'style_updates': row[5],
+                    'quality_score': row[6],
+                    'success': row[7]
+                })
+            
+            return sessions
+            
+        except Exception as e:
+            self._logger.error(f"获取学习会话记录失败: {e}")
+            return []
+
+    # ========== 好感度系统数据库操作方法 ==========
+
+    async def get_user_affection(self, group_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """获取用户好感度"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT affection_level, last_interaction, last_updated, interaction_count
+                FROM user_affection WHERE user_id = ? AND group_id = ?
+            ''', (user_id, group_id))
+            
+            row = await cursor.fetchone()
+            if not row:
+                return None
+                
+            return {
+                'user_id': user_id,
+                'group_id': group_id,
+                'affection_level': row[0],
+                'last_interaction': row[1],
+                'last_updated': row[2],
+                'interaction_count': row[3]
+            }
+            
+        except Exception as e:
+            self._logger.error(f"获取用户好感度失败: {e}")
+            return None
+
+    async def update_user_affection(self, group_id: str, user_id: str, 
+                                  new_level: int, change_reason: str = "", 
+                                  bot_mood: str = "") -> bool:
+        """更新用户好感度"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            current_time = time.time()
+            
+            # 获取当前好感度
+            current_affection = await self.get_user_affection(group_id, user_id)
+            previous_level = current_affection['affection_level'] if current_affection else 0
+            interaction_count = current_affection['interaction_count'] if current_affection else 0
+            
+            # 更新或插入好感度记录
+            await cursor.execute('''
+                INSERT OR REPLACE INTO user_affection 
+                (user_id, group_id, affection_level, last_interaction, last_updated, interaction_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, group_id, new_level, current_time, current_time, interaction_count + 1))
+            
+            # 记录好感度变化历史
+            change_amount = new_level - previous_level
+            if change_amount != 0:
+                await cursor.execute('''
+                    INSERT INTO affection_history 
+                    (user_id, group_id, change_amount, previous_level, new_level, 
+                     change_reason, bot_mood, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, group_id, change_amount, previous_level, new_level, 
+                      change_reason, bot_mood, current_time))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            self._logger.error(f"更新用户好感度失败: {e}")
+            return False
+
+    async def get_all_user_affections(self, group_id: str) -> List[Dict[str, Any]]:
+        """获取群内所有用户好感度"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT user_id, affection_level, last_interaction, last_updated, interaction_count
+                FROM user_affection 
+                WHERE group_id = ?
+                ORDER BY affection_level DESC
+            ''', (group_id,))
+            
+            affections = []
+            for row in await cursor.fetchall():
+                affections.append({
+                    'user_id': row[0],
+                    'group_id': group_id,
+                    'affection_level': row[1],
+                    'last_interaction': row[2],
+                    'last_updated': row[3],
+                    'interaction_count': row[4]
+                })
+            
+            return affections
+            
+        except Exception as e:
+            self._logger.error(f"获取所有用户好感度失败: {e}")
+            return []
+
+    async def get_total_affection(self, group_id: str) -> int:
+        """获取群内总好感度"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            await cursor.execute('''
+                SELECT SUM(affection_level) FROM user_affection WHERE group_id = ?
+            ''', (group_id,))
+            
+            result = await cursor.fetchone()
+            return result[0] if result[0] is not None else 0
+            
+        except Exception as e:
+            self._logger.error(f"获取总好感度失败: {e}")
+            return 0
+
+    async def save_bot_mood(self, group_id: str, mood_type: str, mood_intensity: float,
+                           mood_description: str, duration_hours: int = 24) -> bool:
+        """保存bot情绪状态"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            current_time = time.time()
+            end_time = current_time + (duration_hours * 3600)
+            
+            # 将之前的情绪设为非活跃状态
+            await cursor.execute('''
+                UPDATE bot_mood SET is_active = FALSE, end_time = ? WHERE group_id = ? AND is_active = TRUE
+            ''', (current_time, group_id))
+            
+            # 插入新的情绪状态
+            await cursor.execute('''
+                INSERT INTO bot_mood 
+                (group_id, mood_type, mood_intensity, mood_description, start_time, end_time, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, TRUE)
+            ''', (group_id, mood_type, mood_intensity, mood_description, current_time, end_time))
+            
+            await conn.commit()
+            return True
+            
+        except Exception as e:
+            self._logger.error(f"保存bot情绪失败: {e}")
+            return False
+
+    async def get_current_bot_mood(self, group_id: str) -> Optional[Dict[str, Any]]:
+        """获取当前bot情绪"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            current_time = time.time()
+            
+            await cursor.execute('''
+                SELECT mood_type, mood_intensity, mood_description, start_time, end_time
+                FROM bot_mood 
+                WHERE group_id = ? AND is_active = TRUE AND start_time <= ? AND (end_time IS NULL OR end_time > ?)
+                ORDER BY start_time DESC
+                LIMIT 1
+            ''', (group_id, current_time, current_time))
+            
+            row = await cursor.fetchone()
+            if not row:
+                return None
+                
+            return {
+                'mood_type': row[0],
+                'mood_intensity': row[1],
+                'mood_description': row[2],
+                'start_time': row[3],
+                'end_time': row[4]
+            }
+            
+        except Exception as e:
+            self._logger.error(f"获取当前bot情绪失败: {e}")
+            return None
+
+    async def get_affection_history(self, group_id: str, user_id: str = None, 
+                                   days: int = 7) -> List[Dict[str, Any]]:
+        """获取好感度变化历史"""
+        conn = await self.get_group_connection(group_id)
+        cursor = await conn.cursor()
+        
+        try:
+            start_time = time.time() - (days * 24 * 3600)
+            
+            if user_id:
+                await cursor.execute('''
+                    SELECT user_id, change_amount, previous_level, new_level, 
+                           change_reason, bot_mood, timestamp
+                    FROM affection_history 
+                    WHERE group_id = ? AND user_id = ? AND timestamp >= ?
+                    ORDER BY timestamp DESC
+                ''', (group_id, user_id, start_time))
+            else:
+                await cursor.execute('''
+                    SELECT user_id, change_amount, previous_level, new_level, 
+                           change_reason, bot_mood, timestamp
+                    FROM affection_history 
+                    WHERE group_id = ? AND timestamp >= ?
+                    ORDER BY timestamp DESC
+                ''', (group_id, start_time))
+            
+            history = []
+            for row in await cursor.fetchall():
+                history.append({
+                    'user_id': row[0],
+                    'change_amount': row[1],
+                    'previous_level': row[2],
+                    'new_level': row[3],
+                    'change_reason': row[4],
+                    'bot_mood': row[5],
+                    'timestamp': row[6]
+                })
+            
+            return history
+            
+        except Exception as e:
+            self._logger.error(f"获取好感度历史失败: {e}")
+            return []

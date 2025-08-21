@@ -346,6 +346,40 @@ class ServiceFactory(IServiceFactory):
             self._logger.error(f"导入人格备份管理器失败: {e}", exc_info=True)
             raise ServiceError(f"创建人格备份管理器失败: {str(e)}")
 
+    def create_temporary_persona_updater(self):
+        """创建临时人格更新器"""
+        cache_key = "temporary_persona_updater"
+        
+        if cache_key in self._service_cache:
+            return self._service_cache[cache_key]
+        
+        try:
+            from ..services.temporary_persona_updater import TemporaryPersonaUpdater
+            
+            # 获取依赖的服务
+            persona_updater = self.create_persona_updater()
+            backup_manager = self.create_persona_backup_manager()
+            llm_client = self.create_llm_client()
+            db_manager = self.create_database_manager()
+            
+            service = TemporaryPersonaUpdater(
+                self.config,
+                self.context,
+                persona_updater,
+                backup_manager,
+                llm_client,
+                db_manager
+            )
+            self._service_cache[cache_key] = service
+            self._registry.register_service("temporary_persona_updater", service)
+            
+            self._logger.info("创建临时人格更新器成功")
+            return service
+            
+        except ImportError as e:
+            self._logger.error(f"导入临时人格更新器失败: {e}", exc_info=True)
+            raise ServiceError(f"创建临时人格更新器失败: {str(e)}")
+
     def create_persona_updater(self) -> IPersonaUpdater: # 修改返回类型为 IPersonaUpdater
         """创建人格更新器"""
         cache_key = "persona_updater"
@@ -557,6 +591,9 @@ class ComponentFactory:
         self.config = config
         self.service_factory = service_factory
         self._logger = logger
+        # 添加服务缓存和注册表引用
+        self._service_cache = service_factory._service_cache
+        self._registry = service_factory._registry
     
     def create_qq_filter(self):
         """创建QQ号过滤器"""
@@ -578,6 +615,132 @@ class ComponentFactory:
         llm_client = self.service_factory.create_llm_client() # 通过注入的 service_factory 获取 LLMClient 实例
         prompts = self.service_factory.get_prompts() # 获取 prompts
         return ActualPersonaUpdater(self.config, context, backup_manager, llm_client, prompts) # 传递 config, llm_client 和 prompts
+
+    def create_data_analytics_service(self):
+        """创建数据分析与可视化服务"""
+        cache_key = "data_analytics"
+        
+        if cache_key in self._service_cache:
+            return self._service_cache[cache_key]
+        
+        try:
+            from ..services.data_analytics import DataAnalyticsService
+            
+            service = DataAnalyticsService(
+                self.config,
+                self.service_factory.create_database_manager()
+            )
+            self._service_cache[cache_key] = service
+            self._registry.register_service("data_analytics", service)
+            
+            self._logger.info("创建数据分析服务成功")
+            return service
+            
+        except ImportError as e:
+            self._logger.error(f"导入数据分析服务失败: {e}", exc_info=True)
+            raise ServiceError(f"创建数据分析服务失败: {str(e)}")
+
+    def create_advanced_learning_service(self):
+        """创建高级学习机制服务"""
+        cache_key = "advanced_learning"
+        
+        if cache_key in self._service_cache:
+            return self._service_cache[cache_key]
+        
+        try:
+            from ..services.advanced_learning import AdvancedLearningService
+            
+            service = AdvancedLearningService(
+                self.config,
+                self.service_factory.create_llm_client(),
+                self.service_factory.create_database_manager(),
+                self.service_factory.create_persona_manager()
+            )
+            self._service_cache[cache_key] = service
+            self._registry.register_service("advanced_learning", service)
+            
+            self._logger.info("创建高级学习服务成功")
+            return service
+            
+        except ImportError as e:
+            self._logger.error(f"导入高级学习服务失败: {e}", exc_info=True)
+            raise ServiceError(f"创建高级学习服务失败: {str(e)}")
+
+    def create_enhanced_interaction_service(self):
+        """创建增强交互服务"""
+        cache_key = "enhanced_interaction"
+        
+        if cache_key in self._service_cache:
+            return self._service_cache[cache_key]
+        
+        try:
+            from ..services.enhanced_interaction import EnhancedInteractionService
+            
+            service = EnhancedInteractionService(
+                self.config,
+                self.service_factory.create_llm_client(),
+                self.service_factory.create_database_manager()
+            )
+            self._service_cache[cache_key] = service
+            self._registry.register_service("enhanced_interaction", service)
+            
+            self._logger.info("创建增强交互服务成功")
+            return service
+            
+        except ImportError as e:
+            self._logger.error(f"导入增强交互服务失败: {e}", exc_info=True)
+            raise ServiceError(f"创建增强交互服务失败: {str(e)}")
+
+    def create_intelligence_enhancement_service(self):
+        """创建智能化提升服务"""
+        cache_key = "intelligence_enhancement"
+        
+        if cache_key in self._service_cache:
+            return self._service_cache[cache_key]
+        
+        try:
+            from ..services.intelligence_enhancement import IntelligenceEnhancementService
+            
+            service = IntelligenceEnhancementService(
+                self.config,
+                self.service_factory.create_llm_client(),
+                self.service_factory.create_database_manager(),
+                self.service_factory.create_persona_manager()
+            )
+            self._service_cache[cache_key] = service
+            self._registry.register_service("intelligence_enhancement", service)
+            
+            self._logger.info("创建智能化提升服务成功")
+            return service
+            
+        except ImportError as e:
+            self._logger.error(f"导入智能化提升服务失败: {e}", exc_info=True)
+            raise ServiceError(f"创建智能化提升服务失败: {str(e)}")
+
+    def create_affection_manager_service(self):
+        """创建好感度管理服务"""
+        cache_key = "affection_manager"
+        
+        if cache_key in self._service_cache:
+            return self._service_cache[cache_key]
+        
+        try:
+            from ..services.affection_manager import AffectionManager
+            
+            service = AffectionManager(
+                self.config,
+                self.service_factory.create_database_manager(),
+                self.service_factory.create_llm_client()
+            )
+            self._service_cache[cache_key] = service
+            self._registry.register_service("affection_manager", service)
+            
+            self._logger.info("创建好感度管理服务成功")
+            return service
+            
+        except ImportError as e:
+            self._logger.error(f"导入好感度管理服务失败: {e}", exc_info=True)
+            raise ServiceError(f"创建好感度管理服务失败: {str(e)}")
 
 
 # 全局工厂实例管理器

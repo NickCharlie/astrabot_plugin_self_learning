@@ -297,5 +297,73 @@
         "default": 10
       }
     }
+  },
+  "Affection_System_Settings": {
+    "description": "好感度系统设置",
+    "type": "object",
+    "hint": "用户好感度和bot情绪管理配置",
+    "items": {
+      "enable_affection_system": {
+        "description": "启用好感度系统",
+        "type": "bool",
+        "hint": "是否启用用户好感度和情绪响应系统",
+        "default": true
+      },
+      "max_total_affection": {
+        "description": "总好感度上限",
+        "type": "int",
+        "hint": "bot对所有用户的总好感度上限值",
+        "default": 250
+      },
+      "max_user_affection": {
+        "description": "单用户好感度上限",
+        "type": "int",
+        "hint": "单个用户可获得的最大好感度",
+        "default": 100
+      },
+      "affection_decay_rate": {
+        "description": "好感度衰减比例",
+        "type": "float",
+        "hint": "好感度重新分配时的衰减比例，0-1之间",
+        "default": 0.95
+      },
+      "daily_mood_change": {
+        "description": "启用每日情绪变化",
+        "type": "bool",
+        "hint": "是否每天随机更换bot的情绪状态",
+        "default": true
+      },
+      "mood_affect_affection": {
+        "description": "情绪影响好感度变化",
+        "type": "bool",
+        "hint": "当前情绪是否影响好感度变化幅度",
+        "default": true
+      }
+    }
+  },
+  "Mood_System_Settings": {
+    "description": "情绪系统设置",
+    "type": "object",
+    "hint": "bot情绪状态管理配置",
+    "items": {
+      "enable_daily_mood": {
+        "description": "启用每日情绪",
+        "type": "bool",
+        "hint": "是否启用每日随机情绪系统",
+        "default": true
+      },
+      "mood_change_hour": {
+        "description": "情绪更新时间",
+        "type": "int",
+        "hint": "每日更新情绪的小时(0-23)",
+        "default": 6
+      },
+      "mood_persistence_hours": {
+        "description": "情绪持续时间",
+        "type": "int",
+        "hint": "每次情绪状态持续的小时数",
+        "default": 24
+      }
+    }
   }
 }

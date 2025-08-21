@@ -50,6 +50,7 @@ class PluginConfig:
     message_min_length: int = 5             # 消息最小长度
     message_max_length: int = 500           # 消息最大长度
     confidence_threshold: float = 0.7       # 筛选置信度阈值
+    relevance_threshold: float = 0.6        # 相关性阈值
     
     # 风格分析参数
     style_analysis_batch_size: int = 100    # 风格分析批次大小
@@ -85,6 +86,19 @@ class PluginConfig:
     max_mood_imitation_dialogs: int = 20    # 最大对话风格模仿数量
     enable_persona_evolution: bool = True   # 启用人格演化跟踪
     persona_compatibility_threshold: float = 0.6  # 人格兼容性阈值
+    
+    # 好感度系统配置
+    enable_affection_system: bool = True    # 启用好感度系统
+    max_total_affection: int = 250          # bot总好感度满分值
+    max_user_affection: int = 100           # 单个用户最大好感度
+    affection_decay_rate: float = 0.95      # 好感度衰减比例
+    daily_mood_change: bool = True          # 启用每日情绪变化
+    mood_affect_affection: bool = True      # 情绪影响好感度变化
+    
+    # 情绪系统配置
+    enable_daily_mood: bool = True          # 启用每日情绪
+    mood_change_hour: int = 6               # 情绪更新时间（24小时制）
+    mood_persistence_hours: int = 24        # 情绪持续时间
     
     # 存储路径
     data_dir: Optional[str] = None # 允许外部传入，不再有默认值
@@ -145,6 +159,7 @@ class PluginConfig:
             message_min_length=filter_params.get('message_min_length', 5),
             message_max_length=filter_params.get('message_max_length', 500),
             confidence_threshold=filter_params.get('confidence_threshold', 0.7),
+            relevance_threshold=filter_params.get('relevance_threshold', 0.6),
             
             style_analysis_batch_size=style_analysis.get('style_analysis_batch_size', 100),
             style_update_threshold=style_analysis.get('style_update_threshold', 0.8),

@@ -36,10 +36,26 @@ class LLMClient:
         prompt: str,
         contexts: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
         **kwargs
     ) -> Optional[LLMResponse]:
         """
         执行 LLM 对话补全。
+        
+        Args:
+            api_url: API 地址
+            api_key: API 密钥
+            model_name: 模型名称
+            prompt: 用户提示词
+            contexts: 上下文对话历史
+            system_prompt: 系统提示词
+            max_retries: 最大重试次数，默认3次
+            retry_delay: 重试间隔时间(秒)，默认1秒
+            **kwargs: 其他参数
+        
+        Returns:
+            LLMResponse 对象或 None
         """
         headers = {
             "Content-Type": "application/json",
@@ -57,27 +73,84 @@ class LLMClient:
             "messages": messages,
             **kwargs
         }
+        
+        # 确保API URL包含完整的endpoint路径
+        if not api_url.endswith('/chat/completions'):
+            if api_url.endswith('/v1'):
+                api_url = api_url + '/chat/completions'
+            elif not api_url.endswith('/'):
+                api_url = api_url + '/v1/chat/completions'
+            else:
+                api_url = api_url + 'v1/chat/completions'
 
-        try:
-            logger.debug(f"Calling LLM API: {api_url} with model {model_name}")
-            async with self.client.post(api_url, headers=headers, json=payload) as response:
-                response.raise_for_status() # 检查HTTP错误
+        last_error = None
+        
+        # 实施重试机制
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"Calling LLM API: {api_url} with model {model_name} (attempt {attempt + 1}/{max_retries})")
+                async with self.client.post(api_url, headers=headers, json=payload) as response:
+                    # 检查HTTP状态码，区分可重试和不可重试的错误
+                    if response.status in [401, 403, 404]:  # 认证、权限、资源不存在错误，不可重试
+                        error_msg = f"不可重试的HTTP错误 {response.status}: {await response.text()}"
+                        logger.error(error_msg)
+                        return None
+                    
+                    if response.status not in [200, 429, 500, 502, 503, 504]:  # 其他未知错误
+                        response.raise_for_status()
 
-                response_data = await response.json()
-                
-                # 假设LLM响应格式与OpenAI兼容
-                if "choices" in response_data and len(response_data["choices"]) > 0:
-                    text_content = response_data["choices"][0]["message"]["content"]
-                    return LLMResponse(text=text_content, raw_response=response_data)
-                else:
-                    logger.error(f"LLM API 响应格式不正确或无内容: {response_data}")
+                    response_data = await response.json()
+                    
+                    # 假设LLM响应格式与OpenAI兼容
+                    if "choices" in response_data and len(response_data["choices"]) > 0:
+                        message = response_data["choices"][0].get("message", {})
+                        text_content = message.get("content", "")
+                        if text_content:
+                            if attempt > 0:  # 如果之前有失败的尝试，记录成功
+                                logger.info(f"LLM API 调用在第 {attempt + 1} 次尝试后成功")
+                            return LLMResponse(text=text_content, raw_response=response_data)
+                    
+                    # 响应格式错误，不进行重试
+                    error_msg = f"LLM API 响应格式不正确或无内容: {response_data}"
+                    logger.error(error_msg)
                     return None
-        except aiohttp.ClientError as e:
-            logger.error(f"调用 LLM API ({api_url}) 请求失败或HTTP错误: {e}", exc_info=True)
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"LLM API 响应解析失败: {e} - 响应内容: {response.text if 'response' in locals() else 'N/A'}", exc_info=True)
-            return None
-        except Exception as e:
-            logger.error(f"调用 LLM API ({api_url}) 发生未知错误: {e}", exc_info=True)
-            return None
+                        
+            except aiohttp.ClientResponseError as e:
+                if e.status in [429, 500, 502, 503, 504]:  # 可重试的HTTP错误
+                    error_msg = f"可重试的HTTP错误 {e.status}: {e.message}"
+                    logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                    last_error = e
+                else:  # 不可重试的HTTP错误
+                    error_msg = f"不可重试的HTTP错误 {e.status}: {e.message}"
+                    logger.error(error_msg)
+                    return None
+                
+            except aiohttp.ClientError as e:
+                error_msg = f"调用 LLM API ({api_url}) 网络请求失败: {e}"
+                logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                last_error = e
+                
+            except json.JSONDecodeError as e:
+                error_msg = f"LLM API 响应JSON解析失败: {e}"
+                logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                last_error = e
+                
+            except Exception as e:
+                error_msg = f"调用 LLM API ({api_url}) 发生未知错误: {e}"
+                logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                last_error = e
+            
+            # 如果不是最后一次尝试，等待后重试
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)  # 指数退避
+                logger.info(f"等待 {wait_time} 秒后重试...")
+                await asyncio.sleep(wait_time)
+        
+        # 所有重试都失败了
+        logger.error(f"LLM API 调用在 {max_retries} 次尝试后全部失败，最后错误: {last_error}", exc_info=True)
+        return None
+
+    async def close(self):
+        """关闭 HTTP 客户端会话"""
+        if self.client:
+            await self.client.close()

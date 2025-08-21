@@ -111,13 +111,14 @@ class PersonaManagerService(IPersonaManager):
             self._logger.error(f"获取当前人格描述失败: {e}")
             return None
 
-    async def get_current_persona(self) -> Optional[Dict[str, Any]]:
+    async def get_current_persona(self, group_id: str = None) -> Optional[Dict[str, Any]]:
         """获取当前人格信息"""
         try:
+            # group_id 参数用于未来扩展，当前版本仍使用全局人格
             provider = self.context.get_using_provider()
             if provider and provider.curr_personality:
                 return dict(provider.curr_personality)
             return None
         except Exception as e:
-            self._logger.error(f"获取当前人格失败: {e}")
+            self._logger.error(f"获取当前人格失败 for group {group_id}: {e}")
             return None

@@ -55,6 +55,7 @@ class ProgressiveLearningService:
         self.style_analyzer = style_analyzer
         self.quality_monitor = quality_monitor
         self.persona_manager = persona_manager # 注入 persona_manager
+        self.prompts = prompts  # 保存 prompts 实例
         
         # 学习状态
         self.learning_active = False
@@ -323,25 +324,42 @@ class ProgressiveLearningService:
             return {'prompt': '默认人格', 'style_parameters': {}}
 
     async def _generate_updated_persona(self, group_id: str, current_persona: Dict[str, Any], style_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """生成更新后的人格"""
+        """生成更新后的人格 - 直接在原有文本后面追加增量学习内容"""
         try:
+            # 直接从框架获取当前人格
             provider = self.context.get_using_provider()
-            if not provider:
+            if not provider or not provider.curr_personality:
+                logger.warning(f"无法获取当前人格 for group {group_id}")
                 return current_persona
             
-            prompt = self.prompts.PROGRESSIVE_LEARNING_GENERATE_UPDATED_PERSONA_PROMPT.format(
-                current_persona_prompt=current_persona.get('prompt', ''),
-                style_analysis_result=json.dumps(style_analysis, ensure_ascii=False, indent=2)
-            )
+            # 获取原有人格文本
+            original_prompt = provider.curr_personality.get('prompt', '')
             
-            response = await provider.text_chat(prompt)
+            # 构建增量学习内容
+            learning_content = []
             
-            try:
-                updated_persona = json.loads(response.strip())
-                updated_persona['last_updated'] = datetime.now().isoformat()
+            if 'enhanced_prompt' in style_analysis:
+                learning_content.append(style_analysis['enhanced_prompt'])
+            
+            if 'learning_insights' in style_analysis:
+                insights = style_analysis['learning_insights']
+                if insights:
+                    learning_content.append(insights)
+            
+            # 直接在原有文本后面追加新内容
+            if learning_content:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+                new_content = f"\n\n【学习更新 - {timestamp}】\n" + "\n".join(learning_content)
+                
+                # 创建更新后的人格
+                updated_persona = dict(provider.curr_personality)
+                updated_persona['prompt'] = original_prompt + new_content
+                updated_persona['last_updated'] = timestamp
+                
+                logger.info(f"直接追加学习内容到人格 for group {group_id}")
                 return updated_persona
-            except json.JSONDecodeError:
-                logger.warning(f"人格更新JSON解析失败 for group {group_id}，保持原有人格")
+            else:
+                logger.info(f"没有学习内容需要追加 for group {group_id}")
                 return current_persona
                 
         except Exception as e:

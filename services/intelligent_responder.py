@@ -96,7 +96,7 @@ class IntelligentResponder:
             return 0.0
 
     async def generate_intelligent_response_text(self, event: AstrMessageEvent) -> Optional[str]:
-        """生成自学习可能需要用到的的智能回复文本（原来的逻辑）"""
+        """生成自学习可能需要用到的的智能回复文本（修改版 - 增量更新在SYSTEM_PROMPT中）"""
         try:
             sender_id = event.get_sender_id()
             group_id = event.get_group_id()
@@ -105,8 +105,10 @@ class IntelligentResponder:
             # 收集上下文信息
             context_info = await self._collect_context_info(group_id, sender_id, message_text)
             
-            # 构建增强提示词
-            enhanced_prompt = await self._build_enhanced_prompt(context_info, message_text)
+            # 获取基础系统提示词并增强
+            enhanced_system_prompt = await self._build_enhanced_system_prompt(context_info)
+            
+            logger.debug(f"构建的增强系统提示词长度: {len(enhanced_system_prompt)} 字符")
             
             # 调用框架的默认LLM
             provider = self.context.get_using_provider()
@@ -114,22 +116,14 @@ class IntelligentResponder:
                 logger.warning("未找到可用的LLM提供商")
                 return None
             
-            # 使用框架当前的人格设定作为系统提示词
-            provider = self.context.get_using_provider()
-            system_prompt = None
-            if provider and hasattr(provider, 'curr_personality') and provider.curr_personality:
-                system_prompt = provider.curr_personality.get('prompt', '你是一个友好、智能的助手。')
-            else:
-                system_prompt = '你是一个友好、智能的助手。'
-            
             # 使用传入的 llm_client 进行聊天补全
             response = await self.llm_client.chat_completion(
                 api_url=self.config.refine_api_url or "https://api.openai.com/v1/chat/completions", 
                 api_key=self.config.refine_api_key or "", 
                 model_name=self.config.refine_model_name or "gpt-4o", 
-                prompt=enhanced_prompt,
-                system_prompt=system_prompt,  # 使用框架的人格设定
-                temperature=0.7,  # 使用默认温度
+                prompt=message_text,  # 用户消息只包含原始消息
+                system_prompt=enhanced_system_prompt,  # 原有PROMPT + 增量更新
+                temperature=0.7,
                 max_tokens=self.PROMPT_RESPONSE_WORD_LIMIT
             )
             
@@ -179,6 +173,7 @@ class IntelligentResponder:
     async def _collect_context_info(self, group_id: str, sender_id: str, message: str) -> Dict[str, Any]:
         """收集上下文信息"""
         context_info = {
+            'sender_id': sender_id,  # 添加sender_id字段
             'sender_profile': None,
             'user_affection': None,
             'social_relations': [],
@@ -212,205 +207,290 @@ class IntelligentResponder:
         
         return context_info
 
+    async def _build_enhanced_system_prompt(self, context_info: Dict[str, Any]) -> str:
+        """
+        构建增强的系统提示词 = 原有PROMPT + 增量更新 + 用户上下文信息
+        
+        Args:
+            context_info: 用户上下文信息
+            
+        Returns:
+            str: 增强后的系统提示词
+        """
+        try:
+            # 1. 获取基础人格设定（原有的SYSTEM_PROMPT）
+            provider = self.context.get_using_provider()
+            base_system_prompt = "你是一个友好、智能的助手。"  # 默认
+            
+            if provider and hasattr(provider, 'curr_personality') and provider.curr_personality:
+                base_system_prompt = provider.curr_personality.get('prompt', base_system_prompt)
+            
+            logger.debug(f"原有系统提示词长度: {len(base_system_prompt)} 字符")
+            
+            # 2. 构建增量更新部分
+            incremental_updates = ""
+            
+            # 检查是否已经包含增量更新（避免重复添加）
+            if "【增量更新" not in base_system_prompt and "【当前情绪状态" not in base_system_prompt:
+                # 从temporary_persona_updater获取当前的增量更新
+                # 这里可以添加逻辑来获取最新的增量更新内容
+                pass
+            
+            # 3. 构建用户上下文增强信息
+            context_enhancement = await self._build_context_enhancement(context_info)
+            
+            # 4. 组合最终的系统提示词: 原有PROMPT + 增量更新 + 上下文增强
+            enhanced_prompt = base_system_prompt
+            
+            if incremental_updates:
+                enhanced_prompt += f"\n\n{incremental_updates}"
+            
+            if context_enhancement:
+                enhanced_prompt += f"\n\n{context_enhancement}"
+            
+            logger.debug(f"增强后系统提示词长度: {len(enhanced_prompt)} 字符")
+            
+            return enhanced_prompt
+            
+        except Exception as e:
+            logger.error(f"构建增强系统提示词失败: {e}")
+            # 返回基础提示词作为后备
+            return "你是一个友好、智能的助手。"
+    
+    async def _build_context_enhancement(self, context_info: Dict[str, Any]) -> str:
+        """
+        构建用户上下文增强信息（添加到系统提示词末尾）
+        
+        Args:
+            context_info: 用户上下文信息
+            
+        Returns:
+            str: 上下文增强信息
+        """
+        try:
+            enhancement_parts = []
+            
+            # 1. 获取发送者ID用于社交关系查询
+            sender_id = context_info.get('sender_id', '')
+            
+            # 2. 用户画像信息（详细展示）
+            if context_info.get('sender_profile'):
+                profile = context_info['sender_profile']
+                
+                # 构建用户画像基础信息
+                user_info_parts = [
+                    f"- 用户ID: {profile.get('qq_id', '未知')}",
+                    f"- 昵称: {profile.get('qq_name', '未知')}",
+                    f"- 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}",
+                    f"- 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}",
+                    f"- 情感倾向: {profile.get('emotional_tendency', '未知')}",
+                    f"- 活跃时段: {profile.get('active_hours', '未知')}"
+                ]
+                
+                # 添加好感度信息
+                if context_info.get('user_affection'):
+                    affection_data = context_info['user_affection']
+                    affection_level = affection_data.get('affection_level', 0)
+                    last_interaction = affection_data.get('last_interaction', 0)
+                    interaction_count = affection_data.get('interaction_count', 0)
+                    
+                    # 计算好感度等级和描述
+                    if affection_level >= 80:
+                        affection_desc = "非常亲密"
+                    elif affection_level >= 60:
+                        affection_desc = "关系良好"
+                    elif affection_level >= 40:
+                        affection_desc = "较为熟悉"
+                    elif affection_level >= 20:
+                        affection_desc = "初步认识"
+                    else:
+                        affection_desc = "刚认识"
+                    
+                    # 计算交互频率描述
+                    import time
+                    days_since_last = (time.time() - last_interaction) / 86400 if last_interaction > 0 else 999
+                    if days_since_last <= 1:
+                        interaction_desc = "经常互动"
+                    elif days_since_last <= 7:
+                        interaction_desc = "偶尔互动"
+                    else:
+                        interaction_desc = "很少互动"
+                    
+                    user_info_parts.extend([
+                        f"- 好感度: {affection_level}/100 ({affection_desc})",
+                        f"- 交互次数: {interaction_count}次",
+                        f"- 交互频率: {interaction_desc}"
+                    ])
+                else:
+                    user_info_parts.append("- 好感度: 0/100 (新用户)")
+                
+                enhancement_parts.append(f"""
+                【用户画像】:
+                {chr(10).join(user_info_parts)}
+                """)
+            else:
+                # 如果没有用户画像，至少显示好感度信息
+                if context_info.get('user_affection'):
+                    affection_data = context_info['user_affection']
+                    affection_level = affection_data.get('affection_level', 0)
+                    
+                    if affection_level >= 80:
+                        affection_desc = "非常亲密"
+                    elif affection_level >= 60:
+                        affection_desc = "关系良好"
+                    elif affection_level >= 40:
+                        affection_desc = "较为熟悉"
+                    elif affection_level >= 20:
+                        affection_desc = "初步认识"
+                    else:
+                        affection_desc = "刚认识"
+                    
+                    enhancement_parts.append(f"""
+                    【用户信息】:
+                    - 好感度: {affection_level}/100 ({affection_desc})
+                    - 交互次数: {affection_data.get('interaction_count', 0)}次
+                    """)
+                else:
+                    enhancement_parts.append("""
+                    【用户信息】:
+                    - 好感度: 0/100 (新用户)
+                    - 交互次数: 0次
+                    """)
+            
+            # 3. 社交关系图谱（增强版）
+            if context_info.get('social_relations'):
+                relations_details = []
+                for rel in context_info['social_relations'][:5]:  # 显示前5个关系
+                    strength_desc = "强" if rel['strength'] > 0.7 else "中" if rel['strength'] > 0.4 else "弱"
+                    relations_details.append(
+                        f"- 与{rel.get('to_user', '未知用户')}的关系强度: {rel['strength']:.2f}({strength_desc}), "
+                        f"互动次数: {rel.get('interaction_count', 0)}, "
+                        f"关系类型: {rel.get('relation_type', '普通')}"
+                    )
+                
+                enhancement_parts.append(f"""
+                【社交关系图谱】:
+                {chr(10).join(relations_details)}
+                """)
+            
+            # 4. 群聊氛围和活跃度分析
+            atmosphere = context_info.get('group_atmosphere', {})
+            activity_desc = "高度活跃" if atmosphere.get('activity_level') == 'high' else "一般活跃"
+            enhancement_parts.append(f"""
+            【群聊环境】:
+            - 当前活跃度: {activity_desc}
+            - 平均消息长度: {atmosphere.get('avg_message_length', 0):.1f}字符
+            - 最近消息数: {atmosphere.get('total_recent_messages', 0)}条
+            - 群聊氛围: {"热烈讨论" if atmosphere.get('total_recent_messages', 0) > 10 else "轻松聊天"}
+            """)
+            
+            # 5. 最近对话上下文（更详细）
+            if context_info.get('recent_messages'):
+                recent_context = []
+                for i, msg in enumerate(context_info['recent_messages'][-5:], 1):  # 最近5条
+                    quality_score = msg.get('quality_scores', {})
+                    msg_quality = "高质量" if isinstance(quality_score, dict) and quality_score.get('overall', 0) > 0.7 else "普通"
+                    recent_context.append(
+                        f"{i}. {msg.get('sender_name', '未知')}: {msg['message'][:80]}{'...' if len(msg['message']) > 80 else ''} "
+                        f"(消息质量: {msg_quality})"
+                    )
+                
+                enhancement_parts.append(f"""
+                【最近对话上下文】:
+                {chr(10).join(recent_context)}
+                """)
+            
+            # 6. 时间和情境信息
+            time_context = context_info.get('time_context', datetime.now().isoformat())
+            hour = datetime.now().hour
+            time_period = "早上" if 6 <= hour < 12 else "下午" if 12 <= hour < 18 else "晚上" if 18 <= hour < 22 else "深夜"
+            
+            enhancement_parts.append(f"""
+            【时间情境】:
+            - 当前时间: {time_context[:16]}
+            - 时段: {time_period}
+            - 建议语气: {"活力充沛" if time_period in ["早上", "下午"] else "温和轻松"}
+            """)
+            
+            # 7. 回复指导原则（增强版）
+            enhancement_parts.append(f"""
+            【回复要求】:
+            1. 根据用户画像调整回复风格和内容偏好
+            2. **根据用户好感度调整亲密程度**：
+            - 好感度0-20：保持礼貌但略显生疏，使用敬语
+            - 好感度21-40：友好但不过分亲近，正常交流
+            - 好感度41-60：较为熟悉的朋友语气，可以开玩笑
+            - 好感度61-80：亲近朋友语气，更多关心和互动
+            - 好感度81-100：非常亲密的关系，可以撒娇或使用昵称
+            3. 考虑社交关系强度，对关系较强的用户更加亲近
+            4. 适应当前群聊氛围和活跃度
+            5. 参考最近对话上下文，保持话题连贯性
+            6. 根据时间情境调整语气和活跃度
+            7. 回复要自然流畅，长度控制在{self.PROMPT_RESPONSE_WORD_LIMIT}字以内
+            8. 避免重复性回复，体现个性化和智能化
+            9. 如果用户表达情感，要给予适当的情感回应
+            10. 保持角色一致性，不要出戏
+            11. 对于高好感度用户，可以主动关心和询问，体现更多人情味
+            """)
+            
+            # 组合所有增强信息
+            if enhancement_parts:
+                return "\n\n".join(enhancement_parts)
+            else:
+                return ""
+            
+        except Exception as e:
+            logger.error(f"构建用户上下文增强信息失败: {e}")
+            return ""
+
     async def _build_enhanced_prompt(self, context_info: Dict[str, Any], message: str) -> str:
         """构建增强的提示词，包含人格增量更新和社交关系等信息"""
-        prompt_parts = []
-        
-        # 1. 基础场景设定
-        prompt_parts.append("你正在参与一个真实的群聊对话，需要基于以下详细上下文信息进行自然、智能的回复：")
-        
-        # 2. 当前人格状态 - 获取完整的人格信息（包含增量更新）
-        provider = self.context.get_using_provider()
-        current_persona = "你是一个友好、智能的助手。"  # 默认人格
-        persona_updates_info = ""
-        
-        if provider and hasattr(provider, 'curr_personality') and provider.curr_personality:
-            current_persona = provider.curr_personality.get('prompt', current_persona)
+        try:
+            prompt_parts = []
             
-            # 检查并提取增量更新信息
-            if "【增量更新" in current_persona:
-                # 提取所有增量更新部分
-                import re
-                update_pattern = r'【增量更新[^】]*】[^【]*'
-                updates = re.findall(update_pattern, current_persona)
-                if updates:
-                    persona_updates_info = f"\n\n【当前活跃的人格增量更新】:\n" + "\n".join(updates[-3:])  # 取最近3个更新
+            # 1. 基础场景设定
+            prompt_parts.append("你正在参与一个真实的群聊对话，需要基于以下详细上下文信息进行自然、智能的回复：")
             
-            logger.debug(f"获取到当前人格设定长度: {len(current_persona)} 字符")
-        
-        prompt_parts.append(f"""
-        【人格设定】:
-        {current_persona}
-        {persona_updates_info}
-        """)
-        
-        # 3. 用户画像信息（详细展示）
-        if context_info['sender_profile']:
-            profile = context_info['sender_profile']
+            # 2. 当前人格状态 - 获取完整的人格信息（包含增量更新）
+            provider = self.context.get_using_provider()
+            current_persona = "你是一个友好、智能的助手。"  # 默认人格
+            persona_updates_info = ""
             
-            # 构建用户画像基础信息
-            user_info_parts = [
-                f"- 用户ID: {profile.get('qq_id', '未知')}",
-                f"- 昵称: {profile.get('qq_name', '未知')}",
-                f"- 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}",
-                f"- 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}",
-                f"- 情感倾向: {profile.get('emotional_tendency', '未知')}",
-                f"- 活跃时段: {profile.get('active_hours', '未知')}"
-            ]
-            
-            # 添加好感度信息
-            if context_info['user_affection']:
-                affection_data = context_info['user_affection']
-                affection_level = affection_data.get('affection_level', 0)
-                last_interaction = affection_data.get('last_interaction', 0)
-                interaction_count = affection_data.get('interaction_count', 0)
+            if provider and hasattr(provider, 'curr_personality') and provider.curr_personality:
+                current_persona = provider.curr_personality.get('prompt', current_persona)
                 
-                # 计算好感度等级和描述
-                if affection_level >= 80:
-                    affection_desc = "非常亲密"
-                elif affection_level >= 60:
-                    affection_desc = "关系良好"
-                elif affection_level >= 40:
-                    affection_desc = "较为熟悉"
-                elif affection_level >= 20:
-                    affection_desc = "初步认识"
-                else:
-                    affection_desc = "刚认识"
+                # 检查并提取增量更新信息
+                if "【增量更新" in current_persona:
+                    # 提取所有增量更新部分
+                    import re
+                    update_pattern = r'【增量更新[^】]*】[^【]*'
+                    updates = re.findall(update_pattern, current_persona)
+                    if updates:
+                        persona_updates_info = f"\n\n【当前活跃的人格增量更新】:\n" + "\n".join(updates[-3:])  # 取最近3个更新
                 
-                # 计算交互频率描述
-                import time
-                days_since_last = (time.time() - last_interaction) / 86400 if last_interaction > 0 else 999
-                if days_since_last <= 1:
-                    interaction_desc = "经常互动"
-                elif days_since_last <= 7:
-                    interaction_desc = "偶尔互动"
-                else:
-                    interaction_desc = "很少互动"
-                
-                user_info_parts.extend([
-                    f"- 好感度: {affection_level}/100 ({affection_desc})",
-                    f"- 交互次数: {interaction_count}次",
-                    f"- 交互频率: {interaction_desc}"
-                ])
-            else:
-                user_info_parts.append("- 好感度: 0/100 (新用户)")
+                logger.debug(f"获取到当前人格设定长度: {len(current_persona)} 字符")
             
             prompt_parts.append(f"""
-            【用户画像】:
-            {chr(10).join(user_info_parts)}
+            【人格设定】:
+            {current_persona}
+            {persona_updates_info}
             """)
-        else:
-            # 如果没有用户画像，至少显示好感度信息
-            if context_info['user_affection']:
-                affection_data = context_info['user_affection']
-                affection_level = affection_data.get('affection_level', 0)
-                
-                if affection_level >= 80:
-                    affection_desc = "非常亲密"
-                elif affection_level >= 60:
-                    affection_desc = "关系良好"
-                elif affection_level >= 40:
-                    affection_desc = "较为熟悉"
-                elif affection_level >= 20:
-                    affection_desc = "初步认识"
-                else:
-                    affection_desc = "刚认识"
-                
-                prompt_parts.append(f"""
-                【用户信息】:
-                - 好感度: {affection_level}/100 ({affection_desc})
-                - 交互次数: {affection_data.get('interaction_count', 0)}次
-                """)
-            else:
-                prompt_parts.append("""
-                【用户信息】:
-                - 好感度: 0/100 (新用户)
-                - 交互次数: 0次
-                """)
-        
-        # 4. 社交关系图谱（增强版）
-        if context_info['social_relations']:
-            relations_details = []
-            for rel in context_info['social_relations'][:5]:  # 显示前5个关系
-                strength_desc = "强" if rel['strength'] > 0.7 else "中" if rel['strength'] > 0.4 else "弱"
-                relations_details.append(
-                    f"- 与{rel.get('to_user', '未知用户')}的关系强度: {rel['strength']:.2f}({strength_desc}), "
-                    f"互动次数: {rel.get('interaction_count', 0)}, "
-                    f"关系类型: {rel.get('relation_type', '普通')}"
-                )
             
-            prompt_parts.append(f"""
-            【社交关系图谱】:
-            {chr(10).join(relations_details)}
-            """)
-        
-        # 5. 群聊氛围和活跃度分析
-        atmosphere = context_info['group_atmosphere']
-        activity_desc = "高度活跃" if atmosphere.get('activity_level') == 'high' else "一般活跃"
-        prompt_parts.append(f"""
-        【群聊环境】:
-        - 当前活跃度: {activity_desc}
-        - 平均消息长度: {atmosphere.get('avg_message_length', 0):.1f}字符
-        - 最近消息数: {atmosphere.get('total_recent_messages', 0)}条
-        - 群聊氛围: {"热烈讨论" if atmosphere.get('total_recent_messages', 0) > 10 else "轻松聊天"}
-        """)
-        
-        # 6. 最近对话上下文（更详细）
-        if context_info['recent_messages']:
-            recent_context = []
-            for i, msg in enumerate(context_info['recent_messages'][-5:], 1):  # 最近5条
-                quality_score = msg.get('quality_scores', {})
-                msg_quality = "高质量" if isinstance(quality_score, dict) and quality_score.get('overall', 0) > 0.7 else "普通"
-                recent_context.append(
-                    f"{i}. {msg.get('sender_name', '未知')}: {msg['message'][:80]}{'...' if len(msg['message']) > 80 else ''} "
-                    f"(消息质量: {msg_quality})"
-                )
+            # 3. 添加详细的上下文信息到提示词
+            context_enhancement = await self._build_context_enhancement(context_info)
+            if context_enhancement:
+                prompt_parts.append(context_enhancement)
             
+            # 4. 当前用户消息
             prompt_parts.append(f"""
-            【最近对话上下文】:
-            {chr(10).join(recent_context)}
+            【当前用户消息】: {message}
             """)
-        
-        # 7. 时间和情境信息
-        time_context = context_info.get('time_context', datetime.now().isoformat())
-        hour = datetime.now().hour
-        time_period = "早上" if 6 <= hour < 12 else "下午" if 12 <= hour < 18 else "晚上" if 18 <= hour < 22 else "深夜"
-        
-        prompt_parts.append(f"""
-        【时间情境】:
-        - 当前时间: {time_context[:16]}
-        - 时段: {time_period}
-        - 建议语气: {"活力充沛" if time_period in ["早上", "下午"] else "温和轻松"}
-        """)
-        
-        # 8. 当前用户消息
-        prompt_parts.append(f"""
-        【当前用户消息】: {message}
-        """)
-        
-        # 9. 回复指导原则（增强版）
-        prompt_parts.append(f"""
-        【回复要求】:
-        1. 严格按照人格设定进行回复，特别注意增量更新的特征
-        2. 根据用户画像调整回复风格和内容偏好
-        3. **根据用户好感度调整亲密程度**：
-           - 好感度0-20：保持礼貌但略显生疏，使用敬语
-           - 好感度21-40：友好但不过分亲近，正常交流
-           - 好感度41-60：较为熟悉的朋友语气，可以开玩笑
-           - 好感度61-80：亲近朋友语气，更多关心和互动
-           - 好感度81-100：非常亲密的关系，可以撒娇或使用昵称
-        4. 考虑社交关系强度，对关系较强的用户更加亲近
-        5. 适应当前群聊氛围和活跃度
-        6. 参考最近对话上下文，保持话题连贯性
-        7. 根据时间情境调整语气和活跃度
-        8. 回复要自然流畅，长度控制在{self.PROMPT_RESPONSE_WORD_LIMIT}字以内
-        9. 避免重复性回复，体现个性化和智能化
-        10. 如果用户表达情感，要给予适当的情感回应
-        11. 保持角色一致性，不要出戏
-        12. 对于高好感度用户，可以主动关心和询问，体现更多人情味
-        """)
-        
-        return "\n".join(prompt_parts)
+            
+            return "\n".join(prompt_parts)
+            
+        except Exception as e:
+            logger.error(f"构建增强提示词失败: {e}")
+            return f"你是一个友好、智能的助手。请回复用户消息: {message}"
 
     async def _get_conversation_context(self, group_id: str, sender_id: str) -> List[Dict[str, str]]:
         """获取对话上下文"""

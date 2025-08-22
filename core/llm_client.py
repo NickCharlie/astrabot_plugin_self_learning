@@ -75,7 +75,7 @@ class LLMClient:
         contexts: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
         max_retries: int = 3,
-        retry_delay: float = 1.0,
+        retry_delay: float = 0.0,
         **kwargs
     ) -> Optional[LLMResponse]:
         """

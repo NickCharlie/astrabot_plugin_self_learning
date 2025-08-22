@@ -281,11 +281,15 @@ class SelfLearningPlugin(star.Star):
             
             # 智能回复处理 - 在所有数据处理完成后
             try:
-                intelligent_reply = await self.intelligent_responder.send_intelligent_response(event)
-                if intelligent_reply:
+                intelligent_reply_params = await self.intelligent_responder.send_intelligent_response(event)
+                if intelligent_reply_params:
                     # 使用yield发送智能回复
-                    yield event.plain_result(intelligent_reply)
-                    logger.info(f"已发送智能回复: {intelligent_reply[:50]}...")
+                    yield event.request_llm(
+                        prompt=intelligent_reply_params['prompt'],
+                        session_id=intelligent_reply_params['session_id'],
+                        conversation=intelligent_reply_params['conversation']
+                    )
+                    logger.info(f"已发送智能回复请求: prompt长度={len(intelligent_reply_params['prompt'])}字符, session_id={intelligent_reply_params['session_id']}")
             except Exception as e:
                 logger.error(f"智能回复处理失败: {e}", exc_info=True)
             

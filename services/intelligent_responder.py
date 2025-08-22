@@ -10,6 +10,7 @@ from datetime import datetime
 from astrbot.api import logger
 from astrbot.api.star import Context
 from astrbot.api.event import AstrMessageEvent
+from astrbot.core.platform.message_type import MessageType
 
 from ..config import PluginConfig
 from ..exceptions import ResponseError
@@ -49,8 +50,9 @@ class IntelligentResponder:
         
         try:
             # 获取消息类型 (私聊或群聊)
-            is_private_chat = event.is_private_chat()
-            is_group_chat = bool(True if event.get_group_id() != None else False)  # 如果有group_id则为群聊
+            group_id = event.get_group_id()
+            is_group_chat = True if event.get_message_type() == MessageType.GROUP_MESSAGE else False
+            is_private_chat = not is_group_chat
             message_text = event.get_message_str()
             
             if is_private_chat:
@@ -59,7 +61,7 @@ class IntelligentResponder:
                 return True
             elif is_group_chat:
                 # 群聊消息只有被 @ 或唤醒时才回复
-                if event.is_at_or_wake_command:
+                if hasattr(event, 'is_at_or_wake_command') and event.is_at_or_wake_command:
                     logger.debug(f"群聊消息被@或唤醒，将回复: {message_text[:50]}")
                     return True
                 else:
@@ -93,8 +95,8 @@ class IntelligentResponder:
             logger.error(f"获取社交强度失败: {e}")
             return 0.0
 
-    async def generate_intelligent_response(self, event: AstrMessageEvent) -> Optional[str]:
-        """生成智能回复"""
+    async def generate_intelligent_response_text(self, event: AstrMessageEvent) -> Optional[str]:
+        """生成自学习可能需要用到的的智能回复文本（原来的逻辑）"""
         try:
             sender_id = event.get_sender_id()
             group_id = event.get_group_id()
@@ -141,8 +143,38 @@ class IntelligentResponder:
                 return None
             
         except Exception as e:
-            logger.error(f"生成智能回复失败: {e}")
-            raise ResponseError(f"生成智能回复失败: {str(e)}")
+            logger.error(f"生成智能回复文本失败: {e}")
+            raise ResponseError(f"生成智能回复文本失败: {str(e)}")
+
+    async def generate_intelligent_response(self, event: AstrMessageEvent) -> Optional[Dict[str, Any]]:
+        """生成智能回复参数，用于传递给框架的request_llm"""
+        try:
+            sender_id = event.get_sender_id()
+            group_id = event.get_group_id()
+            message_text = event.get_message_str()
+            
+            # 收集上下文信息
+            context_info = await self._collect_context_info(group_id, sender_id, message_text)
+            
+            # 构建增强提示词，包含所有人格增量更新和社交关系信息
+            enhanced_prompt = await self._build_enhanced_prompt(context_info, message_text)
+            
+            # 获取当前会话信息
+            conversation = await self._get_conversation_context(group_id, sender_id)
+            
+            # 获取当前会话ID
+            curr_cid = f"{group_id}_{sender_id}" if group_id else sender_id
+            
+            # 返回request_llm所需的参数
+            return {
+                'prompt': enhanced_prompt,
+                'session_id': curr_cid,
+                'conversation': conversation
+            }
+            
+        except Exception as e:
+            logger.error(f"生成智能回复参数失败: {e}")
+            raise ResponseError(f"生成智能回复参数失败: {str(e)}")
 
     async def _collect_context_info(self, group_id: str, sender_id: str, message: str) -> Dict[str, Any]:
         """收集上下文信息"""
@@ -177,85 +209,163 @@ class IntelligentResponder:
         return context_info
 
     async def _build_enhanced_prompt(self, context_info: Dict[str, Any], message: str) -> str:
-        """构建增强的提示词"""
+        """构建增强的提示词，包含人格增量更新和社交关系等信息"""
         prompt_parts = []
         
-        # 基础人格设定 - 使用框架当前的完整人格设定（包含增量更新）
+        # 1. 基础场景设定
+        prompt_parts.append("你正在参与一个真实的群聊对话，需要基于以下详细上下文信息进行自然、智能的回复：")
+        
+        # 2. 当前人格状态 - 获取完整的人格信息（包含增量更新）
         provider = self.context.get_using_provider()
         current_persona = "你是一个友好、智能的助手。"  # 默认人格
-        has_incremental_updates = False
+        persona_updates_info = ""
         
         if provider and hasattr(provider, 'curr_personality') and provider.curr_personality:
             current_persona = provider.curr_personality.get('prompt', current_persona)
-            # 检查是否包含增量更新
-            has_incremental_updates = "【增量更新" in current_persona
-            logger.debug(f"获取到当前人格设定长度: {len(current_persona)} 字符，包含增量更新: {has_incremental_updates}")
+            
+            # 检查并提取增量更新信息
+            if "【增量更新" in current_persona:
+                # 提取所有增量更新部分
+                import re
+                update_pattern = r'【增量更新[^】]*】[^【]*'
+                updates = re.findall(update_pattern, current_persona)
+                if updates:
+                    persona_updates_info = f"\n\n【当前活跃的人格增量更新】:\n" + "\n".join(updates[-3:])  # 取最近3个更新
+            
+            logger.debug(f"获取到当前人格设定长度: {len(current_persona)} 字符")
         
-        # 添加简要的上下文说明
-        if has_incremental_updates:
-            prompt_parts.append("请基于当前人格设定（包含最新的增量更新）和以下上下文信息进行回复：")
-        else:
-            prompt_parts.append("请基于当前人格设定和以下上下文信息进行回复：")
+        prompt_parts.append(f"""
+        【人格设定】:
+        {current_persona}
+        {persona_updates_info}
+        """)
         
-        # 用户画像信息
+        # 3. 用户画像信息（详细展示）
         if context_info['sender_profile']:
             profile = context_info['sender_profile']
             prompt_parts.append(f"""
-            用户信息:
-            - QQ号: {profile.get('qq_id', '未知')}
+            【用户画像】:
+            - 用户ID: {profile.get('qq_id', '未知')}
             - 昵称: {profile.get('qq_name', '未知')}
             - 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}
             - 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}
+            - 情感倾向: {profile.get('emotional_tendency', '未知')}
+            - 活跃时段: {profile.get('active_hours', '未知')}
             """)
         
-        # 社交关系
+        # 4. 社交关系图谱（增强版）
         if context_info['social_relations']:
-            relations_desc = []
-            for rel in context_info['social_relations'][:3]:
-                relations_desc.append(f"与{rel['to_user']}关系强度{rel['strength']:.2f}")
-            prompt_parts.append(f"社交关系: {', '.join(relations_desc)}")
-        
-        # 群聊氛围
-        atmosphere = context_info['group_atmosphere']
-        prompt_parts.append(f"当前群聊氛围: {atmosphere.get('activity_level', '未知')}活跃度")
-        
-        # 最近消息上下文
-        if context_info['recent_messages']:
-            recent_msgs = []
-            for msg in context_info['recent_messages']:
-                recent_msgs.append(f"{msg['sender_name']}: {msg['message'][:50]} (评分: {msg['quality_scores']})")
-            prompt_parts.append(f"最近对话: {' | '.join(recent_msgs)}")
-        
-        # 当前消息
-        prompt_parts.append(f"当前消息: {message}")
-        
-        # 回复要求
-        prompt_parts.append("""
-            请基于以上信息生成一个自然、智能的回复。要求:
-            1. 符合设定的人格特征
-            2. 考虑用户的沟通风格和偏好
-            3. 适应当前的群聊氛围
-            4. 回复简洁明了，不超过100字
-            5. 语言风格要自然流畅
+            relations_details = []
+            for rel in context_info['social_relations'][:5]:  # 显示前5个关系
+                strength_desc = "强" if rel['strength'] > 0.7 else "中" if rel['strength'] > 0.4 else "弱"
+                relations_details.append(
+                    f"- 与{rel.get('to_user', '未知用户')}的关系强度: {rel['strength']:.2f}({strength_desc}), "
+                    f"互动次数: {rel.get('interaction_count', 0)}, "
+                    f"关系类型: {rel.get('relation_type', '普通')}"
+                )
+            
+            prompt_parts.append(f"""
+            【社交关系图谱】:
+            {chr(10).join(relations_details)}
             """)
         
-        return "\n\n".join(prompt_parts)
+        # 5. 群聊氛围和活跃度分析
+        atmosphere = context_info['group_atmosphere']
+        activity_desc = "高度活跃" if atmosphere.get('activity_level') == 'high' else "一般活跃"
+        prompt_parts.append(f"""
+        【群聊环境】:
+        - 当前活跃度: {activity_desc}
+        - 平均消息长度: {atmosphere.get('avg_message_length', 0):.1f}字符
+        - 最近消息数: {atmosphere.get('total_recent_messages', 0)}条
+        - 群聊氛围: {"热烈讨论" if atmosphere.get('total_recent_messages', 0) > 10 else "轻松聊天"}
+        """)
+        
+        # 6. 最近对话上下文（更详细）
+        if context_info['recent_messages']:
+            recent_context = []
+            for i, msg in enumerate(context_info['recent_messages'][-5:], 1):  # 最近5条
+                quality_score = msg.get('quality_scores', {})
+                msg_quality = "高质量" if isinstance(quality_score, dict) and quality_score.get('overall', 0) > 0.7 else "普通"
+                recent_context.append(
+                    f"{i}. {msg.get('sender_name', '未知')}: {msg['message'][:80]}{'...' if len(msg['message']) > 80 else ''} "
+                    f"(消息质量: {msg_quality})"
+                )
+            
+            prompt_parts.append(f"""
+            【最近对话上下文】:
+            {chr(10).join(recent_context)}
+            """)
+        
+        # 7. 时间和情境信息
+        time_context = context_info.get('time_context', datetime.now().isoformat())
+        hour = datetime.now().hour
+        time_period = "早上" if 6 <= hour < 12 else "下午" if 12 <= hour < 18 else "晚上" if 18 <= hour < 22 else "深夜"
+        
+        prompt_parts.append(f"""
+        【时间情境】:
+        - 当前时间: {time_context[:16]}
+        - 时段: {time_period}
+        - 建议语气: {"活力充沛" if time_period in ["早上", "下午"] else "温和轻松"}
+        """)
+        
+        # 8. 当前用户消息
+        prompt_parts.append(f"""
+        【当前用户消息】: {message}
+        """)
+        
+        # 9. 回复指导原则（增强版）
+        prompt_parts.append(f"""
+        【回复要求】:
+        1. 严格按照人格设定进行回复，特别注意增量更新的特征
+        2. 根据用户画像调整回复风格和内容偏好
+        3. 考虑社交关系强度，对关系较强的用户更加亲近
+        4. 适应当前群聊氛围和活跃度
+        5. 参考最近对话上下文，保持话题连贯性
+        6. 根据时间情境调整语气和活跃度
+        7. 回复要自然流畅，长度控制在{self.PROMPT_RESPONSE_WORD_LIMIT}字以内
+        8. 避免重复性回复，体现个性化和智能化
+        9. 如果用户表达情感，要给予适当的情感回应
+        10. 保持角色一致性，不要出戏
+        """)
+        
+        return "\n".join(prompt_parts)
+
+    async def _get_conversation_context(self, group_id: str, sender_id: str) -> List[Dict[str, str]]:
+        """获取对话上下文"""
+        try:
+            # 获取最近的消息作为对话上下文
+            recent_messages = await self.db_manager.get_recent_filtered_messages(group_id, self.context_window_size)
+            
+            conversation = []
+            for msg in recent_messages:
+                # 将消息转换为对话格式
+                conversation.append({
+                    "role": "user" if msg['sender_id'] != "bot" else "assistant",
+                    "content": msg['message']
+                })
+            
+            return conversation
+            
+        except Exception as e:
+            logger.error(f"获取对话上下文失败: {e}")
+            return []
 
     async def _record_response(self, group_id: str, sender_id: str, original_message: str, response: str):
         """记录回复信息用于学习"""
         try:
-            conn = await self.db_manager.get_group_connection(group_id)
+            conn = await self.db_manager._get_messages_db_connection()
             cursor = await conn.cursor()
             
             # 简化实现：filtered_messages 表用于记录所有经过筛选的消息，包括BOT的回复。
             # 实际应用中，可能需要为BOT回复创建单独的表以区分。
             await cursor.execute('''
                 INSERT OR IGNORE INTO filtered_messages 
-                (message, sender_id, confidence, filter_reason, timestamp, used_for_learning)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (message, sender_id, group_id, confidence, filter_reason, timestamp, used_for_learning)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (
                 f"BOT回复: {response}",
                 "bot",
+                group_id,  # 添加 group_id 字段
                 1.0, # 假设BOT回复的置信度为1.0
                 f"回复{sender_id}: {original_message[:self.PROMPT_MESSAGE_LENGTH_LIMIT]}", # 使用常量
                 time.time(),
@@ -268,21 +378,21 @@ class IntelligentResponder:
             logger.error(f"记录回复失败: {e}")
 
     async def send_intelligent_response(self, event: AstrMessageEvent):
-        """发送智能回复 - 返回回复内容供main.py使用yield发送"""
+        """发送智能回复 - 返回request_llm参数供main.py使用yield发送"""
         try:
             if not await self.should_respond(event):
                 return None
             
-            response = await self.generate_intelligent_response(event)
+            response_params = await self.generate_intelligent_response(event)
             
-            if response:
-                logger.info(f"生成智能回复: {response[:self.PROMPT_MESSAGE_LENGTH_LIMIT]}...")
-                return response  # 返回回复内容而不是直接发送
+            if response_params:
+                logger.info(f"生成智能回复参数: prompt长度={len(response_params['prompt'])}字符, session_id={response_params['session_id']}")
+                return response_params  # 返回request_llm参数
             else:
                 return None
                 
         except Exception as e:
-            logger.error(f"生成智能回复失败: {e}")
+            logger.error(f"生成智能回复参数失败: {e}")
             return None
 
     async def get_response_statistics(self, group_id: str) -> Dict[str, Any]:

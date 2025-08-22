@@ -1,106 +1,16 @@
-quart
-quart-cors
-uvicorn
-
-# 核心异步支持
-asyncio
-aiohttp
-aiofiles
-
-# 数据库支持
-pysqlite3
-sqlalchemy
-aiosqlite
-
-# 机器学习和数据分析
-numpy
-pandas
-scikit-learn
-scipy
-matplotlib
-seaborn
-plotly
-
-# 自然语言处理
-jieba
-textstat
-wordcloud
-nltk
-spacy
-python-jose
-
-# 深度学习（可选）
-torch
-transformers
-sentence-transformers
-
-# HTTP请求和API
-requests
-aiohttp
-
-# 配置文件处理
-pyyaml
-toml
-configparser
-
-# 数据验证和解析
-pydantic
-marshmallow
-
-# 时间和日期处理
-python-dateutil
-
-# 文件操作和压缩
-zipfile
-tarfile
-
-# 日志和监控
-loguru
-structlog
-
-# 缓存支持
-cachetools
-redis
-
-# 加密和安全
-cryptography
-hashlib
-
-# 图像处理（如果需要处理图片消息）
-pillow
-opencv-python
-
-# 数据可视化
-bokeh
-pygments
-
-# 图和网络分析
-networkx
-
-# 网络工具
-urllib3
-certifi
-
-# 多线程和并发
-threading
-concurrent.futures
-multiprocessing
-
-# 系统监控
-psutil
-
-# 测试框架
-pytest
-pytest-asyncio
-
-# 开发工具
-black
-flake8
-mypy
-
-# 其他实用工具
-click
-tqdm
-rich
-typer
-emoji
+aiohttp==3.12.15
+aiosqlite==0.21.0
+emoji==2.14.1
+hypercorn==0.17.3
+jieba==0.42.1
+matplotlib==3.10.5
+networkx==3.5
+numpy==2.3.2
+pandas==2.3.2
+plotly==6.3.0
+psutil==7.0.0
+quart==0.20.0
+quart_cors==0.8.0
+scikit_learn==1.7.1
+seaborn==0.13.2
+wordcloud==1.9.4

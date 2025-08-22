@@ -2,6 +2,7 @@ import os
 import asyncio
 import json # 导入 json 模块
 import secrets
+import time
 from typing import Optional, List, Dict, Any
 from dataclasses import asdict
 from functools import wraps
@@ -666,6 +667,11 @@ async def root():
 class Server:
     """Quart 服务器管理类"""
     def __init__(self, host: str = "0.0.0.0", port: int = 7833):
+        print(f"🔧 初始化Web服务器 (端口: {port})...")
+        
+        # 检查端口是否可用
+        self._check_port_availability(port)
+        
         self.host = host
         self.port = port
         self.server_task: Optional[asyncio.Task] = None
@@ -677,47 +683,96 @@ class Server:
         self.config.loglevel = "INFO"
         self.config.use_reloader = False
         self.config.workers = 1
+        
+        print(f"✅ Web服务器初始化完成 (端口: {port})")
+    
+    def _check_port_availability(self, port: int):
+        """检查端口可用性，如果被占用则等待或警告"""
+        import socket
+        
+        # 检查端口是否被占用
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1)
+                result = sock.connect_ex(("127.0.0.1", port))
+                if result == 0:
+                    print(f"⚠️ 端口 {port} 被占用，这可能是之前的实例未正确关闭")
+                    print(f"🔄 Web服务器启动时将尝试重用该端口")
+                else:
+                    print(f"✅ 端口 {port} 可用")
+        except Exception as e:
+            print(f"⚠️ 检查端口 {port} 时出错: {e}")
+            print(f"🔄 继续初始化，启动时处理端口冲突")
 
     async def start(self):
-        """启动服务器"""
-        print(f"[DEBUG] Server.start() 被调用, host={self.host}, port={self.port}")
+        """启动服务器 - 增强版本，包含端口冲突处理"""
+        print(f"🚀 启动Web服务器 (端口: {self.port})...")
+        
         if self.server_task and not self.server_task.done():
-            print("[DEBUG] 服务器已在运行中")
+            print("ℹ️ Web服务器已在运行中")
             return # Server already running
         
         try:
-            print(f"[DEBUG] 配置服务器绑定: {self.config.bind}")
+            print(f"🔧 配置服务器绑定: {self.config.bind}")
+            
             # Hypercorn 的 serve 函数是阻塞的，需要在一个单独的协程中运行
             self.server_task = asyncio.create_task(
                 hypercorn.asyncio.serve(app, self.config)
             )
-            print(f"[DEBUG] 服务器任务已创建: {self.server_task}")
-            print(f"✓ Quart web server started at http://{self.host}:{self.port}")
             
-            # 等待更长时间让服务器完全启动
-            await asyncio.sleep(3)
+            print(f"✅ Web服务器任务已创建")
+            print(f"🌐 访问地址: http://{self.host}:{self.port}")
+            
+            # 等待服务器启动
+            await asyncio.sleep(2)
             
             # 检查服务器状态
             if self.server_task and not self.server_task.done():
-                print(f"✓ Web server is running successfully on http://{self.host}:{self.port}")
-                print(f"[DEBUG] 服务器任务状态: done={self.server_task.done()}, cancelled={self.server_task.cancelled()}")
+                print(f"✅ Web服务器启动成功 (http://{self.host}:{self.port})")
             else:
-                print(f"⚠️ Web server task completed unexpectedly")
+                print(f"❌ Web服务器任务意外完成")
+                if self.server_task and self.server_task.done():
+                    try:
+                        # 获取任务异常
+                        exception = self.server_task.exception()
+                        if exception:
+                            print(f"❌ 服务器启动异常: {exception}")
+                    except:
+                        pass
                 
         except Exception as e:
-            print(f"❌ Error starting Quart server: {e}")
+            print(f"❌ 启动Web服务器失败: {e}")
+            
+            # 检查是否是端口冲突
+            if "Address already in use" in str(e) or "port" in str(e).lower():
+                print(f"🔧 检测到端口 {self.port} 冲突")
+                print(f"💡 建议: 插件重载时前一个实例可能未完全关闭")
+                
             import traceback
-            traceback.print_exc() # 打印详细错误堆栈
+            traceback.print_exc()
             self.server_task = None
 
     async def stop(self):
-        """停止服务器"""
+        """停止服务器 - 增强版本，包含超时处理"""
+        print(f"🛑 正在停止Web服务器 (端口: {self.port})...")
+        
         if self.server_task and not self.server_task.done():
+            # 1. 尝试优雅关闭，设置超时
             self.server_task.cancel()
             try:
-                await self.server_task
+                await asyncio.wait_for(self.server_task, timeout=5.0)
+                print("✅ Web服务器已优雅停止")
             except asyncio.CancelledError:
-                print("Quart server stopped.")
+                print("✅ Web服务器已取消")
+            except asyncio.TimeoutError:
+                print("⚠️ Web服务器停止超时，已强制取消")
             except Exception as e:
-                print(f"Error stopping Quart server: {e}")
+                print(f"⚠️ 停止Web服务器时出错: {e}")
+            
+            # 2. 等待端口释放
+            await asyncio.sleep(1)
+            
             self.server_task = None
+            print(f"🔧 Web服务器停止完成 (端口: {self.port})")
+        else:
+            print("ℹ️ Web服务器已经停止或未启动")

@@ -5,6 +5,7 @@ import os
 import json # 导入 json 模块
 import asyncio
 import time
+import re # 导入正则表达式模块
 from datetime import datetime
 from typing import List, Dict, Optional
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from .webui import Server, set_plugin_services # 导入 FastAPI 服务器相关
 from .statics.messages import StatusMessages, CommandMessages, LogMessages, FileNames, DefaultValues
 
 server_instance: Optional[Server] = None # 全局服务器实例
+_server_cleanup_lock = asyncio.Lock() # 服务器清理锁，防止并发清理
 
 @dataclass
 class LearningStats:
@@ -220,6 +222,39 @@ class SelfLearningPlugin(star.Star):
         except Exception as e:
             logger.error(StatusMessages.LEARNING_SERVICE_START_FAILED.format(group_id=group_id, error=e))
 
+    def _is_plugin_command(self, message_text: str) -> bool:
+        """使用正则表达式检查消息是否为插件命令"""
+        if not message_text:
+            return False
+        
+        # 定义所有插件命令（不包含前缀符号）
+        plugin_commands = [
+            'learning_status',
+            'start_learning', 
+            'stop_learning',
+            'force_learning',
+            'clear_data',
+            'export_data',
+            'affection_status',
+            'set_mood',
+            'analytics_report',
+            'persona_switch',
+            'temp_persona',
+            'apply_persona_updates',
+            'clean_duplicate_content'
+        ]
+        
+        # 创建命令的正则表达式模式
+        # 匹配: [任意单个字符][命令名][可选的空格和参数]
+        # ^.{1} : 开头任意一个字符（命令前缀）
+        # (命令1|命令2|...) : 匹配任一插件命令
+        # (\s.*)?$ : 可选的空格和参数，到字符串结尾
+        commands_pattern = '|'.join(re.escape(cmd) for cmd in plugin_commands)
+        pattern = rf'^.{{1}}({commands_pattern})(\s.*)?$'
+        
+        # 使用正则表达式匹配，忽略大小写
+        return bool(re.match(pattern, message_text.strip(), re.IGNORECASE))
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         """监听所有消息，收集用户对话数据"""
@@ -239,6 +274,10 @@ class SelfLearningPlugin(star.Star):
             # 获取消息文本
             message_text = event.get_message_str()
             if not message_text or len(message_text.strip()) == 0:
+                return
+            
+            # 过滤插件命令 - 避免命令被当作聊天消息处理
+            if self._is_plugin_command(message_text):
                 return
                 
             # 收集消息
@@ -422,12 +461,31 @@ class SelfLearningPlugin(star.Star):
             # 获取收集统计
             collector_stats = await self.message_collector.get_statistics(group_id) # 传入 group_id
             
+            # 确保 collector_stats 不为 None
+            if collector_stats is None:
+                collector_stats = {
+                    'total_messages': 0,
+                    'filtered_messages': 0,
+                    'raw_messages': 0,
+                    'unprocessed_messages': 0,
+                }
+            
             # 获取当前人格设置
             current_persona_info = await self.persona_manager.get_current_persona(group_id)
-            current_persona_name = current_persona_info.get('name', CommandMessages.STATUS_UNKNOWN) if current_persona_info else CommandMessages.STATUS_UNKNOWN
+            current_persona_name = CommandMessages.STATUS_UNKNOWN
+            if current_persona_info and isinstance(current_persona_info, dict):
+                current_persona_name = current_persona_info.get('name', CommandMessages.STATUS_UNKNOWN)
             
             # 获取渐进式学习服务的状态
             learning_status = await self.progressive_learning.get_learning_status()
+            
+            # 确保 learning_status 不为 None
+            if learning_status is None:
+                learning_status = {
+                    'learning_active': False,
+                    'current_session': None,
+                    'total_sessions': 0,
+                }
             
             # 构建状态信息
             status_info = CommandMessages.STATUS_REPORT_HEADER.format(group_id=group_id)
@@ -1015,14 +1073,32 @@ class SelfLearningPlugin(star.Star):
                 except Exception as e:
                     logger.error(f"保存消息收集器状态失败: {e}")
                 
-            # 7. 停止 Web 服务器
-            global server_instance
-            if server_instance:
-                try:
-                    await server_instance.stop()
-                    logger.info("Web服务器已停止")
-                except Exception as e:
-                    logger.error(f"停止Web服务器失败: {e}")
+            # 7. 停止 Web 服务器 - 增强版
+            global server_instance, _server_cleanup_lock
+            async with _server_cleanup_lock:
+                if server_instance:
+                    try:
+                        logger.info(f"正在停止Web服务器 (端口: {server_instance.port})...")
+                        
+                        # 记录服务器信息用于日志
+                        port = server_instance.port
+                        
+                        # 调用增强的停止方法
+                        await server_instance.stop()
+                        
+                        # 额外等待确保端口释放
+                        await asyncio.sleep(1)
+                        
+                        # 重置全局实例
+                        server_instance = None
+                        
+                        logger.info(f"Web服务器已停止，端口 {port} 已释放")
+                    except Exception as e:
+                        logger.error(f"停止Web服务器失败: {e}", exc_info=True)
+                        # 即使出错也要重置实例，避免重复尝试
+                        server_instance = None
+                else:
+                    logger.info("Web服务器已经停止或未初始化")
                 
             # 8. 保存配置到文件
             try:

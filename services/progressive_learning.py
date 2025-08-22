@@ -58,10 +58,11 @@ class ProgressiveLearningService:
         self.persona_manager = persona_manager # 注入 persona_manager
         self.prompts = prompts  # 保存 prompts 实例
         
-        # 学习状态
-        self.learning_active = False
+        # 学习状态 - 使用字典管理每个群组的学习状态
+        self.learning_active = {}  # 改为字典，按群组ID管理
         self.current_session: Optional[LearningSession] = None
         self.learning_sessions: List[LearningSession] = [] # 历史学习会话，可以从数据库加载
+        self.learning_lock = asyncio.Lock()  # 添加异步锁防止竞态条件
         
         # 学习控制参数
         self.batch_size = config.max_messages_per_batch
@@ -83,54 +84,67 @@ class ProgressiveLearningService:
 
     async def start_learning(self, group_id: str) -> bool:
         """启动学习流程 - 优化为后台任务执行"""
-        try:
-            if self.learning_active:
-                logger.warning("学习已经在进行中")
-                return False
-            
-            self.learning_active = True
-            
-            # 创建新的学习会话
-            session_id = f"session_{int(time.time())}"
-            self.current_session = LearningSession(
-                session_id=session_id,
-                start_time=datetime.now().isoformat()
-            )
-            # 保存新的学习会话到数据库
-            await self.db_manager.save_learning_session_record(group_id, self.current_session.__dict__)
-            
-            logger.info(f"开始学习会话: {session_id}")
-            
-            # 创建后台任务，确保不阻塞主线程
-            learning_task = asyncio.create_task(self._learning_loop_safe(group_id))
-            
-            # 设置任务完成回调
-            def on_learning_complete(task):
-                if task.exception():
-                    logger.error(f"学习任务异常完成: {task.exception()}")
-                else:
-                    logger.info("学习任务正常完成")
-                self.learning_active = False
+        async with self.learning_lock:  # 使用锁防止竞态条件
+            try:
+                # 检查该群组是否已经在学习
+                if self.learning_active.get(group_id, False):
+                    logger.info(f"群组 {group_id} 学习已在进行中，跳过启动")
+                    return True  # 返回True表示学习状态正常
                 
-            learning_task.add_done_callback(on_learning_complete)
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"启动学习失败: {e}")
-            self.learning_active = False
-            return False
+                # 设置该群组为学习状态
+                self.learning_active[group_id] = True
+                
+                # 创建新的学习会话
+                session_id = f"session_{group_id}_{int(time.time())}"
+                self.current_session = LearningSession(
+                    session_id=session_id,
+                    start_time=datetime.now().isoformat()
+                )
+                # 保存新的学习会话到数据库
+                await self.db_manager.save_learning_session_record(group_id, self.current_session.__dict__)
+                
+                logger.info(f"开始学习会话: {session_id} for group {group_id}")
+                
+                # 创建后台任务，确保不阻塞主线程
+                learning_task = asyncio.create_task(self._learning_loop_safe(group_id))
+                
+                # 设置任务完成回调
+                def on_learning_complete(task):
+                    if task.exception():
+                        logger.error(f"群组 {group_id} 学习任务异常完成: {task.exception()}")
+                    else:
+                        logger.info(f"群组 {group_id} 学习任务正常完成")
+                    # 清除该群组的学习状态
+                    self.learning_active[group_id] = False
+                    
+                learning_task.add_done_callback(on_learning_complete)
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"启动群组 {group_id} 学习失败: {e}")
+                # 确保清除学习状态
+                self.learning_active[group_id] = False
+                return False
 
-    async def stop_learning(self):
+    async def stop_learning(self, group_id: str = None):
         """停止学习流程"""
-        self.learning_active = False
+        if group_id:
+            # 停止特定群组的学习
+            self.learning_active[group_id] = False
+            logger.info(f"停止群组 {group_id} 的学习任务")
+        else:
+            # 停止所有群组的学习
+            for gid in list(self.learning_active.keys()):
+                self.learning_active[gid] = False
+            logger.info("停止所有群组的学习任务")
         
         if self.current_session:
             self.current_session.end_time = datetime.now().isoformat()
             self.current_session.success = True  # 假设正常停止即成功
             # 保存更新后的学习会话到数据库
-            default_group_id = "global_learning"  # 或者从配置中获取
-            await self.db_manager.save_learning_session_record(default_group_id, self.current_session.__dict__)
+            target_group_id = group_id or "global_learning"  # 使用指定的群组ID或默认值
+            await self.db_manager.save_learning_session_record(target_group_id, self.current_session.__dict__)
             self.learning_sessions.append(self.current_session)  # 仍然添加到内存列表
             logger.info(f"学习会话结束: {self.current_session.session_id}")
             self.current_session = None
@@ -138,13 +152,13 @@ class ProgressiveLearningService:
     async def _learning_loop_safe(self, group_id: str):
         """安全的学习循环 - 在后台线程执行，包含完整错误处理"""
         try:
-            while self.learning_active:
+            while self.learning_active.get(group_id, False):
                 try:
                     # 检查是否应该暂停学习
                     should_pause, reason = await self.quality_monitor.should_pause_learning()
                     if should_pause:
-                        logger.warning(f"学习被暂停: {reason}")
-                        await self.stop_learning()
+                        logger.warning(f"群组 {group_id} 学习被暂停: {reason}")
+                        await self.stop_learning(group_id)
                         break
                     
                     # 执行一个学习批次 - 在后台执行
@@ -154,10 +168,10 @@ class ProgressiveLearningService:
                     await asyncio.sleep(self.learning_interval)
                     
                 except asyncio.CancelledError:
-                    logger.info("学习任务被取消")
+                    logger.info(f"群组 {group_id} 学习任务被取消")
                     break
                 except Exception as e:
-                    logger.error(f"学习循环异常: {e}", exc_info=True)
+                    logger.error(f"群组 {group_id} 学习循环异常: {e}", exc_info=True)
                     await asyncio.sleep(60)  # 异常时等待1分钟
         finally:
             # 确保清理资源
@@ -719,16 +733,30 @@ class ProgressiveLearningService:
         if message_ids:
             await self.message_collector.mark_messages_processed(message_ids)
 
-    async def get_learning_status(self) -> Dict[str, Any]:
+    async def get_learning_status(self, group_id: str = None) -> Dict[str, Any]:
         """获取学习状态"""
-        return {
-            'learning_active': self.learning_active,
-            'current_session': self.current_session.__dict__ if self.current_session else None,
-            'total_sessions': len(self.learning_sessions),
-            'statistics': await self.message_collector.get_statistics(),
-            'quality_report': await self.quality_monitor.get_quality_report(),
-            'last_update': datetime.now().isoformat()
-        }
+        if group_id:
+            # 获取特定群组的状态
+            return {
+                'learning_active': self.learning_active.get(group_id, False),
+                'group_id': group_id,
+                'current_session': self.current_session.__dict__ if self.current_session else None,
+                'total_sessions': len(self.learning_sessions),
+                'statistics': await self.message_collector.get_statistics(),
+                'quality_report': await self.quality_monitor.get_quality_report(),
+                'last_update': datetime.now().isoformat()
+            }
+        else:
+            # 获取所有群组的状态
+            return {
+                'learning_active_groups': {gid: active for gid, active in self.learning_active.items()},
+                'active_groups_count': sum(1 for active in self.learning_active.values() if active),
+                'current_session': self.current_session.__dict__ if self.current_session else None,
+                'total_sessions': len(self.learning_sessions),
+                'statistics': await self.message_collector.get_statistics(),
+                'quality_report': await self.quality_monitor.get_quality_report(),
+                'last_update': datetime.now().isoformat()
+            }
 
     async def get_learning_insights(self) -> Dict[str, Any]:
         """获取学习洞察"""
@@ -768,7 +796,7 @@ class ProgressiveLearningService:
     async def stop(self):
         """停止服务"""
         try:
-            await self.stop_learning()
+            await self.stop_learning()  # 停止所有群组的学习
             logger.info("渐进式学习服务已停止")
             return True
         except Exception as e:

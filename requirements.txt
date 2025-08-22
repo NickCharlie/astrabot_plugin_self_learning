@@ -27,7 +27,6 @@ textstat
 wordcloud
 nltk
 spacy
-Depends
 python-jose
 
 # 深度学习（可选）

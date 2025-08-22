@@ -122,6 +122,10 @@ class AffectionManager(AsyncServiceBase):
     async def _do_start(self) -> bool:
         """启动好感度管理服务"""
         try:
+            # 为所有活跃群组设置初始随机情绪（如果启用）
+            if self.config.enable_startup_random_mood:
+                await self._initialize_random_moods_for_active_groups()
+            
             # 启动每日情绪更新任务
             if self.config.enable_daily_mood:
                 asyncio.create_task(self._daily_mood_updater())
@@ -372,6 +376,119 @@ class AffectionManager(AsyncServiceBase):
         
         self._logger.info(f"为群 {group_id} 设置新的每日情绪: {mood_type.value} ({intensity:.2f})")
         return mood
+    
+    async def ensure_mood_for_group(self, group_id: str) -> Optional[BotMood]:
+        """确保指定群组有情绪状态，如果没有则创建随机情绪"""
+        try:
+            # 先检查是否已有活跃情绪
+            current_mood = await self.get_current_mood(group_id)
+            if current_mood and current_mood.is_active():
+                return current_mood
+            
+            # 如果没有活跃情绪，设置随机情绪
+            self._logger.info(f"群组 {group_id} 没有活跃情绪，正在设置随机情绪...")
+            return await self.set_random_daily_mood(group_id)
+            
+        except Exception as e:
+            self._logger.error(f"为群组 {group_id} 确保情绪状态失败: {e}")
+            return None
+    
+    async def _initialize_random_moods_for_active_groups(self):
+        """为所有活跃群组初始化随机情绪"""
+        try:
+            # 获取所有活跃群组列表
+            active_groups = await self._get_active_groups()
+            
+            if not active_groups:
+                self._logger.info("没有发现活跃群组，跳过情绪初始化")
+                return
+            
+            initialized_count = 0
+            for group_id in active_groups:
+                try:
+                    # 检查该群组是否已经有活跃情绪
+                    current_mood = await self.get_current_mood(group_id)
+                    if current_mood and current_mood.is_active():
+                        self._logger.debug(f"群组 {group_id} 已有活跃情绪，跳过初始化")
+                        continue
+                    
+                    # 设置随机初始情绪
+                    await self.set_random_daily_mood(group_id)
+                    initialized_count += 1
+                    
+                    # 避免同时初始化过多群组
+                    await asyncio.sleep(0.1)
+                    
+                except Exception as e:
+                    self._logger.error(f"为群组 {group_id} 初始化随机情绪失败: {e}")
+            
+            self._logger.info(f"成功为 {initialized_count} 个群组初始化了随机情绪")
+            
+        except Exception as e:
+            self._logger.error(f"初始化群组随机情绪失败: {e}")
+    
+    async def _get_active_groups(self) -> List[str]:
+        """获取活跃群组列表（从数据库中获取最近有消息的群组）"""
+        try:
+            # 从数据库获取最近24小时内有消息的群组
+            conn = await self.db_manager._get_messages_db_connection()
+            cursor = await conn.cursor()
+            
+            # 先尝试获取最近24小时内有消息的群组
+            cutoff_time = time.time() - 86400  # 24小时前
+            await cursor.execute('''
+                SELECT DISTINCT group_id, COUNT(*) as msg_count
+                FROM raw_messages 
+                WHERE timestamp > ? AND group_id IS NOT NULL AND group_id != ''
+                GROUP BY group_id
+                HAVING msg_count >= 3
+                ORDER BY msg_count DESC
+                LIMIT 20
+            ''', (cutoff_time,))
+            
+            active_groups = []
+            for row in await cursor.fetchall():
+                if row[0]:  # 确保group_id不为空
+                    active_groups.append(row[0])
+            
+            # 如果24小时内没有活跃群组，扩大时间范围到7天，降低消息数要求
+            if not active_groups:
+                cutoff_time = time.time() - 604800  # 7天前
+                await cursor.execute('''
+                    SELECT DISTINCT group_id, COUNT(*) as msg_count
+                    FROM raw_messages 
+                    WHERE timestamp > ? AND group_id IS NOT NULL AND group_id != ''
+                    GROUP BY group_id
+                    HAVING msg_count >= 1
+                    ORDER BY msg_count DESC
+                    LIMIT 10
+                ''', (cutoff_time,))
+                
+                for row in await cursor.fetchall():
+                    if row[0]:  # 确保group_id不为空
+                        active_groups.append(row[0])
+            
+            # 如果还是没有，获取所有有消息记录的群组
+            if not active_groups:
+                await cursor.execute('''
+                    SELECT DISTINCT group_id
+                    FROM raw_messages 
+                    WHERE group_id IS NOT NULL AND group_id != ''
+                    LIMIT 5
+                ''')
+                
+                for row in await cursor.fetchall():
+                    if row[0]:  # 确保group_id不为空
+                        active_groups.append(row[0])
+            
+            self._logger.info(f"找到 {len(active_groups)} 个活跃群组用于情绪初始化")
+            return active_groups
+            
+        except Exception as e:
+            self._logger.error(f"获取活跃群组列表失败: {e}")
+            # 返回空列表，让调用者决定如何处理
+            return []
+    
     
     async def analyze_interaction_type(self, group_id: str, user_id: str, message: str) -> InteractionType:
         """使用LLM主分析，规则作为备选"""

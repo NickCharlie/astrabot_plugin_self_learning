@@ -182,6 +182,14 @@ class SelfLearningPlugin(star.Star):
         except Exception as e:
             logger.error(StatusMessages.DB_MANAGER_START_FAILED.format(error=e), exc_info=True)
         
+        # 启动好感度管理服务（包含随机情绪初始化）
+        if self.plugin_config.enable_affection_system:
+            try:
+                await self.affection_manager.start()
+                logger.info("好感度管理服务启动成功")
+            except Exception as e:
+                logger.error(f"好感度管理服务启动失败: {e}", exc_info=True)
+        
         # 设置Web服务器的插件服务实例和启动Web服务器
         global server_instance
         if self.plugin_config.enable_web_interface and server_instance:
@@ -636,7 +644,13 @@ class SelfLearningPlugin(star.Star):
                 
             # 获取好感度状态
             affection_status = await self.affection_manager.get_affection_status(group_id)
-            current_mood = await self.affection_manager.get_current_mood(group_id)
+            
+            # 确保当前群组有情绪状态（如果没有会自动创建随机情绪）
+            current_mood = None
+            if self.plugin_config.enable_startup_random_mood:
+                current_mood = await self.affection_manager.ensure_mood_for_group(group_id)
+            else:
+                current_mood = await self.affection_manager.get_current_mood(group_id)
             
             # 获取用户个人好感度
             user_affection = await self.db_manager.get_user_affection(group_id, user_id)

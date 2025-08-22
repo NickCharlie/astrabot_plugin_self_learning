@@ -180,6 +180,7 @@ class IntelligentResponder:
         """收集上下文信息"""
         context_info = {
             'sender_profile': None,
+            'user_affection': None,
             'social_relations': [],
             'recent_messages': [],
             'group_atmosphere': {},
@@ -189,6 +190,9 @@ class IntelligentResponder:
         try:
             # 获取发送者画像
             context_info['sender_profile'] = await self.db_manager.load_user_profile(group_id, sender_id)
+            
+            # 获取用户好感度信息
+            context_info['user_affection'] = await self.db_manager.get_user_affection(group_id, sender_id)
             
             # 获取相关社交关系
             all_relations = await self.db_manager.load_social_graph(group_id)
@@ -243,15 +247,86 @@ class IntelligentResponder:
         # 3. 用户画像信息（详细展示）
         if context_info['sender_profile']:
             profile = context_info['sender_profile']
+            
+            # 构建用户画像基础信息
+            user_info_parts = [
+                f"- 用户ID: {profile.get('qq_id', '未知')}",
+                f"- 昵称: {profile.get('qq_name', '未知')}",
+                f"- 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}",
+                f"- 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}",
+                f"- 情感倾向: {profile.get('emotional_tendency', '未知')}",
+                f"- 活跃时段: {profile.get('active_hours', '未知')}"
+            ]
+            
+            # 添加好感度信息
+            if context_info['user_affection']:
+                affection_data = context_info['user_affection']
+                affection_level = affection_data.get('affection_level', 0)
+                last_interaction = affection_data.get('last_interaction', 0)
+                interaction_count = affection_data.get('interaction_count', 0)
+                
+                # 计算好感度等级和描述
+                if affection_level >= 80:
+                    affection_desc = "非常亲密"
+                elif affection_level >= 60:
+                    affection_desc = "关系良好"
+                elif affection_level >= 40:
+                    affection_desc = "较为熟悉"
+                elif affection_level >= 20:
+                    affection_desc = "初步认识"
+                else:
+                    affection_desc = "刚认识"
+                
+                # 计算交互频率描述
+                import time
+                days_since_last = (time.time() - last_interaction) / 86400 if last_interaction > 0 else 999
+                if days_since_last <= 1:
+                    interaction_desc = "经常互动"
+                elif days_since_last <= 7:
+                    interaction_desc = "偶尔互动"
+                else:
+                    interaction_desc = "很少互动"
+                
+                user_info_parts.extend([
+                    f"- 好感度: {affection_level}/100 ({affection_desc})",
+                    f"- 交互次数: {interaction_count}次",
+                    f"- 交互频率: {interaction_desc}"
+                ])
+            else:
+                user_info_parts.append("- 好感度: 0/100 (新用户)")
+            
             prompt_parts.append(f"""
             【用户画像】:
-            - 用户ID: {profile.get('qq_id', '未知')}
-            - 昵称: {profile.get('qq_name', '未知')}
-            - 沟通风格: {json.dumps(profile.get('communication_style', {}), ensure_ascii=False)}
-            - 话题偏好: {json.dumps(profile.get('topic_preferences', {}), ensure_ascii=False)}
-            - 情感倾向: {profile.get('emotional_tendency', '未知')}
-            - 活跃时段: {profile.get('active_hours', '未知')}
+            {chr(10).join(user_info_parts)}
             """)
+        else:
+            # 如果没有用户画像，至少显示好感度信息
+            if context_info['user_affection']:
+                affection_data = context_info['user_affection']
+                affection_level = affection_data.get('affection_level', 0)
+                
+                if affection_level >= 80:
+                    affection_desc = "非常亲密"
+                elif affection_level >= 60:
+                    affection_desc = "关系良好"
+                elif affection_level >= 40:
+                    affection_desc = "较为熟悉"
+                elif affection_level >= 20:
+                    affection_desc = "初步认识"
+                else:
+                    affection_desc = "刚认识"
+                
+                prompt_parts.append(f"""
+                【用户信息】:
+                - 好感度: {affection_level}/100 ({affection_desc})
+                - 交互次数: {affection_data.get('interaction_count', 0)}次
+                """)
+            else:
+                prompt_parts.append("""
+                【用户信息】:
+                - 好感度: 0/100 (新用户)
+                - 交互次数: 0次
+                """)
         
         # 4. 社交关系图谱（增强版）
         if context_info['social_relations']:
@@ -318,14 +393,21 @@ class IntelligentResponder:
         【回复要求】:
         1. 严格按照人格设定进行回复，特别注意增量更新的特征
         2. 根据用户画像调整回复风格和内容偏好
-        3. 考虑社交关系强度，对关系较强的用户更加亲近
-        4. 适应当前群聊氛围和活跃度
-        5. 参考最近对话上下文，保持话题连贯性
-        6. 根据时间情境调整语气和活跃度
-        7. 回复要自然流畅，长度控制在{self.PROMPT_RESPONSE_WORD_LIMIT}字以内
-        8. 避免重复性回复，体现个性化和智能化
-        9. 如果用户表达情感，要给予适当的情感回应
-        10. 保持角色一致性，不要出戏
+        3. **根据用户好感度调整亲密程度**：
+           - 好感度0-20：保持礼貌但略显生疏，使用敬语
+           - 好感度21-40：友好但不过分亲近，正常交流
+           - 好感度41-60：较为熟悉的朋友语气，可以开玩笑
+           - 好感度61-80：亲近朋友语气，更多关心和互动
+           - 好感度81-100：非常亲密的关系，可以撒娇或使用昵称
+        4. 考虑社交关系强度，对关系较强的用户更加亲近
+        5. 适应当前群聊氛围和活跃度
+        6. 参考最近对话上下文，保持话题连贯性
+        7. 根据时间情境调整语气和活跃度
+        8. 回复要自然流畅，长度控制在{self.PROMPT_RESPONSE_WORD_LIMIT}字以内
+        9. 避免重复性回复，体现个性化和智能化
+        10. 如果用户表达情感，要给予适当的情感回应
+        11. 保持角色一致性，不要出戏
+        12. 对于高好感度用户，可以主动关心和询问，体现更多人情味
         """)
         
         return "\n".join(prompt_parts)

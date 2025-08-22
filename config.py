@@ -91,13 +91,16 @@ class PluginConfig:
     
     # 情绪系统配置
     enable_daily_mood: bool = True          # 启用每日情绪
+    enable_startup_random_mood: bool = True # 启用启动时随机情绪初始化
     mood_change_hour: int = 6               # 情绪更新时间（24小时制）
     mood_persistence_hours: int = 24        # 情绪持续时间
     
-    # 存储路径
-    data_dir: Optional[str] = None # 允许外部传入，不再有默认值
+    # 存储路径（内部配置，用户通常不需要修改）
     messages_db_path: Optional[str] = None
     learning_log_path: Optional[str] = None
+    
+    # 用户可配置的存储路径（放在最后，用户可以自定义）
+    data_dir: str = "./data/plugins/astrabot_plugin_self_learning"  # 插件数据存储目录
     
     def __post_init__(self):
         """初始化后处理"""
@@ -121,6 +124,9 @@ class PluginConfig:
         # 删除智能回复设置的获取
         # intelligent_reply_settings = config.get('Intelligent_Reply_Settings', {})
         persona_backup_settings = config.get('Persona_Backup_Settings', {})
+        affection_settings = config.get('Affection_System_Settings', {})
+        mood_settings = config.get('Mood_System_Settings', {})
+        storage_settings = config.get('Storage_Settings', {})
         
         return cls(
             enable_message_capture=basic_settings.get('enable_message_capture', True),
@@ -176,14 +182,28 @@ class PluginConfig:
             save_raw_messages=advanced_settings.get('save_raw_messages', True),
             auto_backup_interval_days=advanced_settings.get('auto_backup_interval_days', 7),
             
+            # 好感度系统配置
+            enable_affection_system=affection_settings.get('enable_affection_system', True),
+            max_total_affection=affection_settings.get('max_total_affection', 250),
+            max_user_affection=affection_settings.get('max_user_affection', 100),
+            affection_decay_rate=affection_settings.get('affection_decay_rate', 0.95),
+            daily_mood_change=affection_settings.get('daily_mood_change', True),
+            mood_affect_affection=affection_settings.get('mood_affect_affection', True),
+            
+            # 情绪系统配置
+            enable_daily_mood=mood_settings.get('enable_daily_mood', True),
+            enable_startup_random_mood=mood_settings.get('enable_startup_random_mood', True),
+            mood_change_hour=mood_settings.get('mood_change_hour', 6),
+            mood_persistence_hours=mood_settings.get('mood_persistence_hours', 24),
+            
             # PersonaUpdater配置 (这些可能不是直接从 _conf_schema.json 的顶层获取，而是从其他地方或默认值)
             persona_merge_strategy=config.get('persona_merge_strategy', 'smart'), 
             max_mood_imitation_dialogs=config.get('max_mood_imitation_dialogs', 20),
             enable_persona_evolution=config.get('enable_persona_evolution', True),
             persona_compatibility_threshold=config.get('persona_compatibility_threshold', 0.6),
             
-            # 传入数据目录
-            data_dir=data_dir
+            # 传入数据目录 - 优先级：外部传入 > 配置文件 > 存储设置 > 默认值
+            data_dir=data_dir if data_dir else storage_settings.get('data_dir', "./data/plugins/astrabot_plugin_self_learning")
         )
 
     @classmethod

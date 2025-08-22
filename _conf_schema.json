@@ -76,19 +76,19 @@
       "filter_provider_id": {
         "description": "筛选模型提供商ID",
         "type": "string",
-        "hint": "指定用于筛选模型的LLM提供商ID。如果为空，将使用默认提供商",
+        "hint": "指定用于筛选模型的LLM提供商ID。不能为空",
         "default": null
       },
       "refine_provider_id": {
         "description": "提炼模型提供商ID",
         "type": "string",
-        "hint": "指定用于提炼模型的LLM提供商ID。如果为空，将使用默认提供商",
+        "hint": "指定用于提炼模型的LLM提供商ID。不能为空",
         "default": null
       },
       "reinforce_provider_id": {
         "description": "强化模型提供商ID",
         "type": "string",
-        "hint": "指定用于强化模型的LLM提供商ID。如果为空，将使用默认提供商",
+        "hint": "指定用于强化模型的LLM提供商ID。不能为空",
         "default": null
       },
       "filter_api_url": {
@@ -106,7 +106,7 @@
       "refine_api_url": {
         "description": "提炼模型API URL",
         "type": "string",
-        "hint": "自定义提炼模型的API接口地址。必须是完整路径，例如：https://api.deepseek.com/chat/completions 或 https://api.openai.com/v1/chat/completions",
+        "hint": "自定义提炼模型的API接口地址。建议使用稍微强大的模型。必须是完整路径，例如：https://api.deepseek.com/chat/completions 或 https://api.openai.com/v1/chat/completions",
         "default": null
       },
       "refine_api_key": {
@@ -118,7 +118,7 @@
       "reinforce_api_url": {
         "description": "强化模型API URL",
         "type": "string",
-        "hint": "自定义强化模型的API接口地址。必须是完整路径，例如：https://api.deepseek.com/chat/completions 或 https://api.openai.com/v1/chat/completions",
+        "hint": "自定义强化模型的API接口地址。建议使用更强大的模型。必须是完整路径，例如：https://api.deepseek.com/chat/completions 或 https://api.openai.com/v1/chat/completions",
         "default": null
       },
       "reinforce_api_key": {
@@ -327,6 +327,12 @@
         "hint": "是否启用每日随机情绪系统",
         "default": true
       },
+      "enable_startup_random_mood": {
+        "description": "启用启动时随机情绪",
+        "type": "bool",
+        "hint": "插件启动时是否为活跃群组设置随机初始情绪",
+        "default": true
+      },
       "mood_change_hour": {
         "description": "情绪更新时间",
         "type": "int",
@@ -338,6 +344,19 @@
         "type": "int",
         "hint": "每次情绪状态持续的小时数",
         "default": 24
+      }
+    }
+  },
+  "Storage_Settings": {
+    "description": "存储路径设置",
+    "type": "object",
+    "hint": "自定义插件数据存储位置",
+    "items": {
+      "data_dir": {
+        "description": "数据存储目录",
+        "type": "string",
+        "hint": "插件数据存储的根目录路径。可以是相对路径或绝对路径",
+        "default": "./data/plugins/astrabot_plugin_self_learning"
       }
     }
   }

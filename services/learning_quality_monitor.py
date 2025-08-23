@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from astrbot.api import logger
 from astrbot.api.star import Context
 
+from ..core.framework_llm_adapter import FrameworkLLMAdapter  # 导入框架适配器
+from ..core.llm_client import LLMClient  # 保持向后兼容
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
 from ..utils.json_utils import safe_parse_llm_json
@@ -40,11 +42,18 @@ class LearningAlert:
 class LearningQualityMonitor:
     """学习质量监控器"""
     
-    def __init__(self, config: PluginConfig, context: Context, llm_client, prompts: Any):
+    def __init__(self, config: PluginConfig, context: Context, 
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None,
+                 # 保持向后兼容
+                 llm_client: Optional[LLMClient] = None,
+                 prompts: Any = None):
         self.config = config
         self.context = context
-        self._llm_client = llm_client # 添加 llm_client
-        self.prompts = prompts # 添加 prompts
+        self.prompts = prompts
+        
+        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        self.llm_adapter = llm_adapter
+        self._llm_client = llm_client
         
         # 监控阈值
         self.consistency_threshold = 0.7    # 一致性阈值
@@ -118,50 +127,67 @@ class LearningQualityMonitor:
             if not original_prompt or not updated_prompt:
                 return 0.5  # 默认中等一致性
             
-            # 使用强LLM进行一致性分析
-            if self._llm_client:
-                prompt = self.prompts.LEARNING_QUALITY_MONITOR_CONSISTENCY_PROMPT.format(
-                    original_persona_prompt=original_prompt,
-                    updated_persona_prompt=updated_prompt
-                )
-                
-                response = await self._llm_client.chat_completion(
-                    prompt=prompt,
-                    api_url=self.config.filter_api_url,  # 使用强LLM
-                    api_key=self.config.filter_api_key,
-                    model_name=self.config.filter_model_name
-                )
-                
-                if response and response.text():
-                    try:
-                        # 解析LLM返回的一致性得分
-                        consistency_text = response.text().strip()
-                        # 提取数值
-                        import re
-                        numbers = re.findall(r'0\.\d+|\d+\.\d+', consistency_text)
-                        if numbers:
-                            consistency_score = float(numbers[0])
-                            logger.debug(f"LLM一致性评分: {consistency_score:.3f}")
-                            return min(consistency_score, 1.0)
-                    except (ValueError, IndexError):
-                        logger.warning(f"LLM一致性得分解析失败: {response.text()}")
+            # 优先使用框架适配器
+            if self.llm_adapter and self.llm_adapter.has_filter_provider():
+                try:
+                    prompt = self.prompts.LEARNING_QUALITY_MONITOR_CONSISTENCY_PROMPT.format(
+                        original_persona_prompt=original_prompt,
+                        updated_persona_prompt=updated_prompt
+                    )
+                    
+                    response = await self.llm_adapter.filter_chat_completion(prompt=prompt)
+                    
+                    if response:
+                        try:
+                            # 解析LLM返回的一致性得分
+                            consistency_text = response.strip()
+                            # 提取数值
+                            import re
+                            numbers = re.findall(r'0\.\d+|1\.0|0', consistency_text)
+                            if numbers:
+                                consistency_score = min(float(numbers[0]), 1.0)
+                                logger.debug(f"人格一致性得分: {consistency_score}")
+                                return consistency_score
+                        except (ValueError, IndexError) as e:
+                            logger.warning(f"解析一致性得分失败: {e}")
+                    return 0.5  # 默认分数
+                except Exception as e:
+                    logger.error(f"框架适配器计算人格一致性失败: {e}")
+                    return 0.5
             
-            # 如果LLM失败，使用简单的文本相似度作为后备
-            original_words = set(original_prompt.split())
-            updated_words = set(updated_prompt.split())
-            
-            if len(original_words) == 0 or len(updated_words) == 0:
+            # 向后兼容：使用旧的LLM客户端
+            elif self._llm_client:
+                try:
+                    prompt = self.prompts.LEARNING_QUALITY_MONITOR_CONSISTENCY_PROMPT.format(
+                        original_persona_prompt=original_prompt,
+                        updated_persona_prompt=updated_prompt
+                    )
+                    
+                    response = await self._llm_client.chat_completion(prompt=prompt)
+                    
+                    if response and response.text():
+                        try:
+                            # 解析LLM返回的一致性得分
+                            consistency_text = response.text().strip()
+                            # 提取数值
+                            import re
+                            numbers = re.findall(r'0\.\d+|1\.0|0', consistency_text)
+                            if numbers:
+                                consistency_score = min(float(numbers[0]), 1.0)
+                                logger.debug(f"人格一致性得分: {consistency_score}")
+                                return consistency_score
+                        except (ValueError, IndexError) as e:
+                            logger.warning(f"解析一致性得分失败: {e}")
+                    return 0.5  # 默认分数
+                except Exception as e:
+                    logger.error(f"LLM客户端计算人格一致性失败: {e}")
+                    return 0.5
+            else:
+                logger.warning("没有可用的LLM服务")
                 return 0.5
             
-            intersection = original_words.intersection(updated_words)
-            union = original_words.union(updated_words)
-            similarity = len(intersection) / len(union) if union else 0.5
-            
-            logger.debug(f"后备一致性评分 (文本相似度): {similarity:.3f}")
-            return min(similarity, 1.0)
-            
         except Exception as e:
-            logger.warning(f"一致性计算失败，使用默认值: {e}")
+            logger.error(f"计算人格一致性失败: {e}")
             return 0.5
 
     async def _calculate_style_stability(self, messages: List[Dict[str, Any]]) -> float:
@@ -230,13 +256,19 @@ class LearningQualityMonitor:
             batch_messages=messages_text
         )
         try:
-            response = await self._llm_client.chat_completion(
-                prompt=prompt,
-                api_url=self.config.refine_api_url,
-                api_key=self.config.refine_api_key,
-                model_name=self.config.refine_model_name
-            )
-            if response and response.text():
+            # 优先使用框架适配器
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
+            # 向后兼容：使用旧的LLM客户端
+            elif self._llm_client:
+                response = await self._llm_client.chat_completion(prompt=prompt)
+            else:
+                logger.warning("没有可用的LLM服务")
+                return self._simple_emotional_balance(messages)
+            
+            # 处理响应（兼容框架适配器返回字符串和LLM客户端返回对象）
+            response_text = response if isinstance(response, str) else (response.text() if response and hasattr(response, 'text') else None)
+            if response_text:
                 # 使用安全的JSON解析
                 default_scores = {
                     "积极": 0.5,
@@ -244,7 +276,7 @@ class LearningQualityMonitor:
                     "中性": 0.5
                 }
                 
-                emotional_scores = safe_parse_llm_json(response.text(), fallback_result=default_scores)
+                emotional_scores = safe_parse_llm_json(response_text, fallback_result=default_scores)
                 
                 if emotional_scores and isinstance(emotional_scores, dict):
                     # 确保所有分数都在0-1之间

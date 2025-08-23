@@ -35,18 +35,13 @@ class LLMClientExtension:
                     from astrbot.api import logger
                     logger.error(f"获取人格描述失败: {e}")
             
-            # 获取模型配置
-            if model_name == self.config.filter_model_name:
-                api_url = getattr(self.config, 'filter_api_url', 'http://localhost:1234/v1/chat/completions')
-                api_key = getattr(self.config, 'filter_api_key', 'not-needed')
-            elif model_name == self.config.refine_model_name:
-                api_url = getattr(self.config, 'refine_api_url', 'http://localhost:1234/v1/chat/completions')
-                api_key = getattr(self.config, 'refine_api_key', 'not-needed')
-            else:
-                # 默认使用过滤模型配置
-                api_url = getattr(self.config, 'filter_api_url', 'http://localhost:1234/v1/chat/completions')
-                api_key = getattr(self.config, 'filter_api_key', 'not-needed')
-                model_name = self.config.filter_model_name
+            # 获取模型配置（向后兼容）
+            # 由于新版本配置已简化，统一使用filter配置作为默认
+            api_url = getattr(self.config, 'filter_api_url', 'http://localhost:1234/v1/chat/completions')
+            api_key = getattr(self.config, 'filter_api_key', 'not-needed')
+            # 如果没有传入模型名称，使用默认值
+            if not model_name:
+                model_name = 'gpt-4o'
             
             # 调用LLM
             response = await self.llm_client.chat_completion(

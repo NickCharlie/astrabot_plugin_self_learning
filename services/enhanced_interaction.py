@@ -18,8 +18,8 @@ from astrbot.api import logger
 from ..config import PluginConfig
 from ..core.patterns import AsyncServiceBase
 from ..core.interfaces import IDataStorage
+from ..core.framework_llm_adapter import FrameworkLLMAdapter
 from ..core.llm_client import LLMClient
-from ..core.compatibility_extensions import create_compatibility_extensions
 
 
 @dataclass
@@ -47,16 +47,16 @@ class CrossGroupMemory:
 class EnhancedInteractionService(AsyncServiceBase):
     """增强交互服务"""
     
-    def __init__(self, config: PluginConfig, llm_client: LLMClient, database_manager: IDataStorage):
+    def __init__(self, config: PluginConfig, database_manager: IDataStorage, 
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None,
+                 llm_client: Optional[LLMClient] = None):
         super().__init__("enhanced_interaction")
         self.config = config
-        self.llm_client = llm_client
         self.db_manager = database_manager
+        self.llm_adapter = llm_adapter
         
-        # 创建兼容性扩展
-        extensions = create_compatibility_extensions(config, llm_client, database_manager, None)
-        self.llm_ext = extensions['llm_client']
-        self.db_ext = extensions['db_manager']
+        # 向后兼容性支持
+        self.llm_client = llm_client if llm_client else None
         
         # 多轮对话管理
         self.conversation_contexts: Dict[str, ConversationContext] = {}
@@ -198,12 +198,15 @@ class EnhancedInteractionService(AsyncServiceBase):
             只返回话题名称，不要其他内容。
             """
             
-            response = await self.llm_ext.generate_response(
-                topic_prompt,
-                model_name=self.config.filter_model_name
+            if not self.llm_adapter:
+                self._logger.warning("LLM适配器未配置，跳过话题检测")
+                return None
+            
+            response = await self.llm_adapter.filter_chat_completion(
+                prompt=topic_prompt
             )
             
-            return response.strip()
+            return response.strip() if response else None
             
         except Exception as e:
             self._logger.error(f"话题检测失败: {e}")
@@ -432,12 +435,15 @@ class EnhancedInteractionService(AsyncServiceBase):
             只返回引导句子，不要其他内容。
             """
             
-            response = await self.llm_ext.generate_response(
-                topic_prompt,
-                model_name=self.config.filter_model_name
+            if not self.llm_adapter:
+                self._logger.warning("LLM适配器未配置，跳过话题选择")
+                return None
+            
+            response = await self.llm_adapter.filter_chat_completion(
+                prompt=topic_prompt
             )
             
-            return response.strip()
+            return response.strip() if response else None
             
         except Exception as e:
             self._logger.error(f"话题选择失败: {e}")

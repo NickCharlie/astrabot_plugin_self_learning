@@ -10,9 +10,10 @@ from dataclasses import dataclass
 from astrbot.api import logger
 from astrbot.api.star import Context
 
+from ..core.framework_llm_adapter import FrameworkLLMAdapter  # 导入框架适配器
+from ..core.llm_client import LLMClient  # 保持向后兼容
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError, ModelAccessError
-from ..core.llm_client import LLMClient # 导入 LLMClient
 from .database_manager import DatabaseManager # 导入 DatabaseManager
 from ..utils.json_utils import safe_parse_llm_json
 
@@ -43,12 +44,18 @@ class StyleAnalyzerService:
     """风格分析服务"""
     
     def __init__(self, config: PluginConfig, context: Context, database_manager: DatabaseManager, 
-                 refine_llm_client: Optional[LLMClient], prompts: Any): # 添加 refine_llm_client 和 prompts
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None,
+                 # 保持向后兼容
+                 refine_llm_client: Optional[LLMClient] = None, 
+                 prompts: Any = None):
         self.config = config
         self.context = context
-        self.db_manager = database_manager # 注入 DatabaseManager 实例
-        self.refine_llm_client = refine_llm_client # 保存 LLMClient 实例
-        self.prompts = prompts # 保存 prompts
+        self.db_manager = database_manager  # 注入 DatabaseManager 实例
+        self.prompts = prompts  # 保存 prompts
+        
+        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        self.llm_adapter = llm_adapter
+        self.refine_llm_client = refine_llm_client  # 保存 LLMClient 实例
         
         # 风格演化历史
         self.style_evolution_history: List[StyleEvolution] = []
@@ -121,26 +128,31 @@ class StyleAnalyzerService:
                 text=text
             )
             
-            response = await llm_client.chat_completion(
-                api_url=self.config.refine_api_url or "https://api.openai.com/v1",
-                api_key=self.config.refine_api_key or "",
-                model_name=self.config.refine_model_name,
-                prompt=prompt
-            )
+            # 优先使用框架适配器
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
+            # 向后兼容：使用传入的LLM客户端
+            elif llm_client:
+                response = await llm_client.chat_completion(prompt=prompt)
+            else:
+                logger.warning("没有可用的LLM服务")
+                return {"error": "LLM服务不可用"}
             
-            if response and response.text():
+            # 处理响应（兼容框架适配器返回字符串和LLM客户端返回对象）
+            response_text = response if isinstance(response, str) else (response.text() if response and hasattr(response, 'text') else None)
+            if response_text:
                 # 使用安全的JSON解析
                 default_analysis = {
                     "error": "JSON解析失败",
                     "raw_response": "响应解析失败"
                 }
                 
-                analysis = safe_parse_llm_json(response.text(), fallback_result=default_analysis)
+                analysis = safe_parse_llm_json(response_text, fallback_result=default_analysis)
                 
                 if analysis and not analysis.get("error"):
                     return analysis
                 else:
-                    return {"error": "JSON解析失败", "raw_response": response.text()}
+                    return {"error": "JSON解析失败", "raw_response": response_text}
             return {"error": "LLM响应为空"}
                 
         except Exception as e:
@@ -154,18 +166,23 @@ class StyleAnalyzerService:
                 text=text
             )
             
-            response = await llm_client.chat_completion(
-                api_url=self.config.refine_api_url or "https://api.openai.com/v1",
-                api_key=self.config.refine_api_key or "",
-                model_name=self.config.refine_model_name,
-                prompt=prompt
-            )
+            # 优先使用框架适配器
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
+            # 向后兼容：使用传入的LLM客户端
+            elif llm_client:
+                response = await llm_client.chat_completion(prompt=prompt)
+            else:
+                logger.warning("没有可用的LLM服务")
+                return StyleProfile()
             
-            if response and response.text():
+            # 处理响应（兼容框架适配器返回字符串和LLM客户端返回对象）
+            response_text = response if isinstance(response, str) else (response.text() if response and hasattr(response, 'text') else None)
+            if response_text:
                 # 使用安全的JSON解析
                 default_scores = StyleProfile()
                 
-                scores_dict = safe_parse_llm_json(response.text(), fallback_result=default_scores.__dict__)
+                scores_dict = safe_parse_llm_json(response_text, fallback_result=default_scores.__dict__)
                 
                 if scores_dict and isinstance(scores_dict, dict):
                     try:
@@ -288,26 +305,31 @@ class StyleAnalyzerService:
                 target_persona=target_persona
             )
             
-            response = await llm_client.chat_completion(
-                api_url=self.config.refine_api_url or "https://api.openai.com/v1",
-                api_key=self.config.refine_api_key or "",
-                model_name=self.config.refine_model_name,
-                prompt=prompt
-            )
+            # 优先使用框架适配器
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
+            # 向后兼容：使用传入的LLM客户端
+            elif llm_client:
+                response = await llm_client.chat_completion(prompt=prompt)
+            else:
+                logger.warning("没有可用的LLM服务")
+                return {"error": "LLM服务不可用"}
             
-            if response and response.text():
+            # 处理响应（兼容框架适配器返回字符串和LLM客户端返回对象）
+            response_text = response if isinstance(response, str) else (response.text() if response and hasattr(response, 'text') else None)
+            if response_text:
                 # 使用安全的JSON解析
                 default_recommendations = {
                     "error": "建议解析失败",
                     "raw_response": "响应解析失败"
                 }
                 
-                recommendations = safe_parse_llm_json(response.text(), fallback_result=default_recommendations)
+                recommendations = safe_parse_llm_json(response_text, fallback_result=default_recommendations)
                 
                 if recommendations and not recommendations.get("error"):
                     return recommendations
                 else:
-                    return {"error": "建议解析失败", "raw_response": response.text()}
+                    return {"error": "建议解析失败", "raw_response": response_text}
             return {"error": "LLM响应为空"}
                 
         except Exception as e:

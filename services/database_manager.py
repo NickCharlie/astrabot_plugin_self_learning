@@ -23,6 +23,11 @@ class DatabaseManager(AsyncServiceBase):
         self.config = config
         self.context = context
         self.group_db_connections: Dict[str, aiosqlite.Connection] = {}
+        
+        # 安全地构建路径
+        if not config.data_dir:
+            raise ValueError("config.data_dir 不能为空")
+        
         self.group_data_dir = os.path.join(config.data_dir, "group_databases")
         self.messages_db_path = config.messages_db_path
         self.messages_db_connection: Optional[aiosqlite.Connection] = None
@@ -268,6 +273,10 @@ class DatabaseManager(AsyncServiceBase):
 
     def get_group_db_path(self, group_id: str) -> str:
         """获取群数据库文件路径"""
+        if not group_id:
+            raise ValueError("group_id 不能为空")
+        if not self.group_data_dir:
+            raise ValueError("group_data_dir 未初始化")
         return os.path.join(self.group_data_dir, f"{group_id}_ID.db")
 
     async def get_group_connection(self, group_id: str) -> aiosqlite.Connection:

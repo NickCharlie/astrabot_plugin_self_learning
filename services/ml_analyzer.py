@@ -93,7 +93,7 @@ class LightweightMLAnalyzer:
                     new_learning_data=json.dumps(new_data_summary, ensure_ascii=False, indent=2),
                     current_persona=json.dumps(current_persona, ensure_ascii=False, indent=2)
                 ),
-                model_name=self.config.reinforce_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
 
             if response and response.text():
@@ -144,7 +144,7 @@ class LightweightMLAnalyzer:
                     incremental_updates=json.dumps(incremental_updates, ensure_ascii=False, indent=2),
                     fusion_history=json.dumps(fusion_history, ensure_ascii=False, indent=2)
                 ),
-                model_name=self.config.reinforce_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
 
             if response and response.text():
@@ -202,7 +202,7 @@ class LightweightMLAnalyzer:
                     current_strategy=json.dumps(current_strategy, ensure_ascii=False, indent=2),
                     performance_metrics=json.dumps(performance_metrics, ensure_ascii=False, indent=2)
                 ),
-                model_name=self.config.reinforce_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
 
             if response and response.text():

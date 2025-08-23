@@ -12,6 +12,8 @@ from astrbot.api.star import Context
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.platform.message_type import MessageType
 
+from ..core.framework_llm_adapter import FrameworkLLMAdapter  # 导入框架适配器
+from ..core.llm_client import LLMClient  # 保持向后兼容
 from ..config import PluginConfig
 from ..exceptions import ResponseError
 
@@ -30,12 +32,19 @@ class IntelligentResponder:
     GROUP_ATMOSPHERE_PERIOD_SECONDS = 3600  # 1小时
     GROUP_ACTIVITY_HIGH_THRESHOLD = 10
     
-    def __init__(self, config: PluginConfig, context: Context, db_manager, llm_client, prompts: Any):
+    def __init__(self, config: PluginConfig, context: Context, db_manager, 
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None,
+                 # 保持向后兼容
+                 llm_client: Optional[LLMClient] = None,
+                 prompts: Any = None):
         self.config = config
         self.context = context
         self.db_manager = db_manager
-        self.llm_client = llm_client
         self.prompts = prompts
+        
+        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        self.llm_adapter = llm_adapter
+        self.llm_client = llm_client
         
         # 设置默认回复策略 - 不依赖配置文件
         self.enable_intelligent_reply = True  # 默认启用智能回复
@@ -116,24 +125,51 @@ class IntelligentResponder:
                 logger.warning("未找到可用的LLM提供商")
                 return None
             
-            # 使用传入的 llm_client 进行聊天补全
-            response = await self.llm_client.chat_completion(
-                api_url=self.config.refine_api_url or "https://api.openai.com/v1/chat/completions", 
-                api_key=self.config.refine_api_key or "", 
-                model_name=self.config.refine_model_name or "gpt-4o", 
-                prompt=message_text,  # 用户消息只包含原始消息
-                system_prompt=enhanced_system_prompt,  # 原有PROMPT + 增量更新
-                temperature=0.7,
-                max_tokens=self.PROMPT_RESPONSE_WORD_LIMIT
-            )
+            # 优先使用框架适配器
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                try:
+                    response = await self.llm_adapter.refine_chat_completion(
+                        prompt=message_text,  # 用户消息只包含原始消息
+                        system_prompt=enhanced_system_prompt,  # 原有PROMPT + 增量更新
+                        temperature=0.7,
+                        max_tokens=self.PROMPT_RESPONSE_WORD_LIMIT
+                    )
+                    
+                    if response:
+                        response_text = response.strip()
+                        # 记录回复
+                        await self._record_response(group_id, sender_id, message_text, response_text)
+                        return response_text
+                    else:
+                        logger.warning("框架适配器未返回有效回复。")
+                        return None
+                except Exception as e:
+                    logger.error(f"框架适配器生成回复失败: {e}")
+                    return None
             
-            if response and response.text():
-                response_text = response.text()
-                # 记录回复
-                await self._record_response(group_id, sender_id, message_text, response_text)
-                return response_text.strip()
+            # 向后兼容：使用旧的LLM客户端  
+            elif self.llm_client:
+                try:
+                    response = await self.llm_client.chat_completion(
+                        prompt=message_text,  # 用户消息只包含原始消息
+                        system_prompt=enhanced_system_prompt,  # 原有PROMPT + 增量更新
+                        temperature=0.7,
+                        max_tokens=self.PROMPT_RESPONSE_WORD_LIMIT
+                    )
+                    
+                    if response and response.text():
+                        response_text = response.text().strip()
+                        # 记录回复
+                        await self._record_response(group_id, sender_id, message_text, response_text)
+                        return response_text
+                    else:
+                        logger.warning("LLM 未返回有效回复。")
+                        return None
+                except Exception as e:
+                    logger.error(f"LLM客户端生成回复失败: {e}")
+                    return None
             else:
-                logger.warning("LLM 未返回有效回复。")
+                logger.warning("没有可用的LLM服务")
                 return None
             
         except Exception as e:
@@ -400,18 +436,6 @@ class IntelligentResponder:
                 {chr(10).join(recent_context)}
                 """)
             
-            # 6. 时间和情境信息
-            time_context = context_info.get('time_context', datetime.now().isoformat())
-            hour = datetime.now().hour
-            time_period = "早上" if 6 <= hour < 12 else "下午" if 12 <= hour < 18 else "晚上" if 18 <= hour < 22 else "深夜"
-            
-            enhancement_parts.append(f"""
-            【时间情境】:
-            - 当前时间: {time_context[:16]}
-            - 时段: {time_period}
-            - 建议语气: {"活力充沛" if time_period in ["早上", "下午"] else "温和轻松"}
-            """)
-            
             # 7. 回复指导原则（增强版）
             enhancement_parts.append(f"""
             【回复要求】:
@@ -425,7 +449,6 @@ class IntelligentResponder:
             3. 考虑社交关系强度，对关系较强的用户更加亲近
             4. 适应当前群聊氛围和活跃度
             5. 参考最近对话上下文，保持话题连贯性
-            6. 根据时间情境调整语气和活跃度
             7. 回复要自然流畅，长度控制在{self.PROMPT_RESPONSE_WORD_LIMIT}字以内
             8. 避免重复性回复，体现个性化和智能化
             9. 如果用户表达情感，要给予适当的情感回应

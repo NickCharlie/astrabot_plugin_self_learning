@@ -160,7 +160,7 @@ class AdvancedLearningService(AsyncServiceBase):
             
             response = await self.llm_ext.generate_response(
                 context_analysis_prompt,
-                model_name=self.config.filter_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
             
             detected_context = response.strip().lower()
@@ -587,7 +587,7 @@ class AdvancedLearningService(AsyncServiceBase):
             
             response = await self.llm_ext.generate_response(
                 variation_prompt,
-                model_name=self.config.filter_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
             
             variations = [line.strip() for line in response.split('\n') if line.strip()]
@@ -730,7 +730,7 @@ class AdvancedLearningService(AsyncServiceBase):
             
             response = await self.llm_ext.generate_response(
                 example_prompt,
-                model_name=self.config.filter_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
             
             return response.strip()

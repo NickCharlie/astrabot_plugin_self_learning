@@ -38,7 +38,7 @@ class LearningStats:
     last_persona_update: Optional[str] = None
 
 
-@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.1.0", "https://github.com/NickCharlie/astrbot_plugin_self_learning")
+@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.2.0", "https://github.com/NickCharlie/astrbot_plugin_self_learning")
 class SelfLearningPlugin(star.Star):
     """AstrBot 自学习插件 - 智能学习用户对话风格并优化人格设置"""
 
@@ -49,8 +49,23 @@ class SelfLearningPlugin(star.Star):
         
         # 初始化插件配置
         # 获取插件数据目录，并传递给 PluginConfig
-        plugin_data_dir = os.path.join(get_astrbot_data_path(), "plugins", "astrabot_plugin_self_learning")
-        self.plugin_config = PluginConfig.create_from_config(self.config, data_dir=plugin_data_dir)
+        try:
+            astrbot_data_path = get_astrbot_data_path()
+            if astrbot_data_path is None:
+                # 回退到当前目录下的 data 目录
+                astrbot_data_path = os.path.join(os.path.dirname(__file__), "data")
+                logger.warning("无法获取 AstrBot 数据路径，使用插件目录下的 data 目录")
+            plugin_data_dir = os.path.join(astrbot_data_path, "plugins", "astrabot_plugin_self_learning")
+            
+            logger.info(f"插件数据目录: {plugin_data_dir}")
+            self.plugin_config = PluginConfig.create_from_config(self.config, data_dir=plugin_data_dir)
+            
+        except Exception as e:
+            logger.error(f"初始化插件配置失败: {e}")
+            # 使用最保险的默认配置
+            default_data_dir = os.path.join(os.path.dirname(__file__), "data")
+            logger.warning(f"使用默认数据目录: {default_data_dir}")
+            self.plugin_config = PluginConfig.create_from_config(self.config, data_dir=default_data_dir)
         
         # 确保数据目录存在
         os.makedirs(self.plugin_config.data_dir, exist_ok=True)
@@ -512,11 +527,18 @@ class SelfLearningPlugin(star.Star):
                 current_persona=current_persona_name
             )
             
-            # 模型配置
-            status_info += CommandMessages.STATUS_MODEL_CONFIG.format(
-                filter_model=self.plugin_config.filter_model_name,
-                refine_model=self.plugin_config.refine_model_name
-            )
+            # Provider配置信息
+            if hasattr(self, 'llm_adapter') and self.llm_adapter:
+                provider_info = self.llm_adapter.get_provider_info()
+                status_info += CommandMessages.STATUS_MODEL_CONFIG.format(
+                    filter_model=provider_info.get('filter', '未配置'),
+                    refine_model=provider_info.get('refine', '未配置')
+                )
+            else:
+                status_info += CommandMessages.STATUS_MODEL_CONFIG.format(
+                    filter_model='未配置框架Provider',
+                    refine_model='未配置框架Provider'
+                )
             
             # 学习统计
             status_info += CommandMessages.STATUS_LEARNING_STATS.format(

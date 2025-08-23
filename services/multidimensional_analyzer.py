@@ -16,7 +16,8 @@ from astrbot.api.event import AstrMessageEvent
 
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
-from ..core.llm_client import LLMClient # 导入自定义LLMClient
+from ..core.llm_client import LLMClient # 导入自定义LLMClient（保持向后兼容）
+from ..core.framework_llm_adapter import FrameworkLLMAdapter # 导入框架适配器
 from .database_manager import DatabaseManager # 导入 DatabaseManager
 from ..utils.json_utils import safe_parse_llm_json
 
@@ -73,6 +74,8 @@ class MultidimensionalAnalyzer:
     """多维度分析器"""
     
     def __init__(self, config: PluginConfig, db_manager: DatabaseManager, context=None,
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None,
+                 # 保持向后兼容的旧参数
                  filter_llm_client: Optional[LLMClient] = None,
                  refine_llm_client: Optional[LLMClient] = None,
                  reinforce_llm_client: Optional[LLMClient] = None,
@@ -80,21 +83,30 @@ class MultidimensionalAnalyzer:
         self.config = config
         self.context = context
         self.db_manager: DatabaseManager = db_manager # 直接传入 DatabaseManager 实例
-        
-        # LLM 客户端通过参数传入
+        self.prompts = prompts # 保存 prompts
+
+        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        self.llm_adapter = llm_adapter
         self.filter_llm_client = filter_llm_client
         self.refine_llm_client = refine_llm_client
         self.reinforce_llm_client = reinforce_llm_client
-        self.prompts = prompts # 保存 prompts
 
-        if not (self.filter_llm_client and config.filter_api_url and config.filter_api_key and config.filter_model_name):
-            logger.warning(f"筛选模型LLM配置不完整：API URL: {config.filter_api_url}, API Key: {'***' if config.filter_api_key else 'None'}, Model Name: {config.filter_model_name}。将无法使用LLM进行消息筛选。")
-
-        if not (self.refine_llm_client and config.refine_api_url and config.refine_api_key and config.refine_model_name):
-            logger.warning(f"提炼模型LLM配置不完整：API URL: {config.refine_api_url}, API Key: {'***' if config.refine_api_key else 'None'}, Model Name: {config.refine_model_name}。将无法使用LLM进行深度分析。")
-
-        if not (self.reinforce_llm_client and config.reinforce_api_url and config.reinforce_api_key and config.reinforce_model_name):
-            logger.warning(f"强化模型LLM配置不完整：API URL: {config.reinforce_api_url}, API Key: {'***' if config.reinforce_api_key else 'None'}, Model Name: {config.reinforce_model_name}。将无法使用LLM进行强化学习。")
+        # 检查配置完整性
+        if self.llm_adapter:
+            if not self.llm_adapter.has_filter_provider():
+                logger.warning("筛选模型Provider未配置。将无法使用LLM进行消息筛选。")
+            if not self.llm_adapter.has_refine_provider():
+                logger.warning("提炼模型Provider未配置。将无法使用LLM进行深度分析。")
+            if not self.llm_adapter.has_reinforce_provider():
+                logger.warning("强化模型Provider未配置。将无法使用LLM进行强化学习。")
+        else:
+            # 向后兼容检查
+            if not (self.filter_llm_client and hasattr(config, 'filter_api_url') and config.filter_api_url):
+                logger.warning("筛选模型LLM配置不完整。将无法使用LLM进行消息筛选。")
+            if self.refine_llm_client:
+                logger.info("提炼模型LLM客户端可用（向后兼容模式）")
+            if self.reinforce_llm_client:
+                logger.info("强化模型LLM客户端可用（向后兼容模式）")
         
         # 用户画像存储
         self.user_profiles: Dict[str, UserProfile] = {}
@@ -278,32 +290,54 @@ class MultidimensionalAnalyzer:
         使用 LLM 对消息进行智能筛选，判断其是否与当前人格匹配、特征鲜明且有学习意义。
         返回 True 表示消息通过筛选，False 表示不通过。
         """
-        if not (self.config.filter_api_url and self.config.filter_api_key and self.config.filter_model_name):
-            logger.warning("筛选模型LLM配置不完整，跳过LLM消息筛选。")
-            return True
-
-        prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT.format(
-            current_persona_description=current_persona_description,
-            message_text=message_text
-        )
-        try:
-            response = await self.filter_llm_client.chat_completion(
-                prompt=prompt,
-                api_url=self.config.filter_api_url,
-                api_key=self.config.filter_api_key,
-                model_name=self.config.filter_model_name
+        # 优先使用框架适配器
+        if self.llm_adapter and self.llm_adapter.has_filter_provider():
+            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT.format(
+                current_persona_description=current_persona_description,
+                message_text=message_text
             )
-            if response and response.text():
-                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
-                if numbers:
-                    confidence = min(float(numbers[0]), 1.0)
-                    logger.debug(f"消息筛选置信度: {confidence} (阈值: {self.config.confidence_threshold})")
-                    return confidence >= self.config.confidence_threshold
-            logger.warning(f"LLM筛选模型未返回有效置信度，消息默认不通过筛选。")
-            return False
-        except Exception as e:
-            logger.error(f"LLM消息筛选失败: {e}")
-            return False
+            try:
+                response = await self.llm_adapter.filter_chat_completion(prompt=prompt)
+                if response:
+                    # 直接解析数值，不需要JSON处理
+                    numbers = re.findall(r'0\.\d+|1\.0|0', response.strip())
+                    if numbers:
+                        confidence = min(float(numbers[0]), 1.0)
+                        logger.debug(f"消息筛选置信度: {confidence} (阈值: {self.config.confidence_threshold})")
+                        return confidence >= self.config.confidence_threshold
+                logger.warning(f"LLM筛选模型未返回有效置信度，消息默认不通过筛选。")
+                return False
+            except Exception as e:
+                logger.error(f"LLM消息筛选失败: {e}")
+                return False
+        
+        # 向后兼容：使用旧的LLM客户端
+        elif self.filter_llm_client and hasattr(self.config, 'filter_api_url') and self.config.filter_api_url:
+            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT.format(
+                current_persona_description=current_persona_description,
+                message_text=message_text
+            )
+            try:
+                response = await self.filter_llm_client.chat_completion(
+                    prompt=prompt,
+                    api_url=self.config.filter_api_url,
+                    api_key=self.config.filter_api_key,
+                    model_name='gpt-4o-mini'  # 使用默认模型名
+                )
+                if response and response.text():
+                    numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
+                    if numbers:
+                        confidence = min(float(numbers[0]), 1.0)
+                        logger.debug(f"消息筛选置信度: {confidence} (阈值: {self.config.confidence_threshold})")
+                        return confidence >= self.config.confidence_threshold
+                logger.warning(f"LLM筛选模型未返回有效置信度，消息默认不通过筛选。")
+                return False
+            except Exception as e:
+                logger.error(f"LLM消息筛选失败: {e}")
+                return False
+        else:
+            logger.warning("筛选模型未配置，跳过LLM消息筛选。")
+            return True
 
     async def evaluate_message_quality_with_llm(self, message_text: str, current_persona_description: str) -> Dict[str, float]:
         """
@@ -311,64 +345,71 @@ class MultidimensionalAnalyzer:
         评分维度包括：内容质量、相关性、情感积极性、互动性、学习价值。
         返回一个包含各维度评分的字典。
         """
-        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
-            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM进行多维度量化评分。")
-            return {
-                "content_quality": 0.5,
-                "relevance": 0.5,
-                "emotional_positivity": 0.5,
-                "interactivity": 0.5,
-                "learning_value": 0.5
-            }
+        default_scores = {
+            "content_quality": 0.5,
+            "relevance": 0.5,
+            "emotional_positivity": 0.5,
+            "interactivity": 0.5,
+            "learning_value": 0.5
+        }
 
-        prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EVALUATE_MESSAGE_QUALITY_PROMPT.format(
-            current_persona_description=current_persona_description,
-            message_text=message_text
-        )
-        try:
-            response = await self.refine_llm_client.chat_completion(
-                prompt=prompt,
-                api_url=self.config.refine_api_url,
-                api_key=self.config.refine_api_key,
-                model_name=self.config.refine_model_name
+        # 优先使用框架适配器
+        if self.llm_adapter and self.llm_adapter.has_refine_provider():
+            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EVALUATE_MESSAGE_QUALITY_PROMPT.format(
+                current_persona_description=current_persona_description,
+                message_text=message_text
             )
-            if response and response.text():
-                # 使用安全的JSON解析方法
-                default_scores = {
-                    "content_quality": 0.5,
-                    "relevance": 0.5,
-                    "emotional_positivity": 0.5,
-                    "interactivity": 0.5,
-                    "learning_value": 0.5
-                }
-                
-                scores = safe_parse_llm_json(response.text(), fallback_result=default_scores)
-                
-                if scores and isinstance(scores, dict):
-                    # 确保所有分数都在0-1之间
-                    for key, value in scores.items():
-                        scores[key] = max(0.0, min(float(value), 1.0))
-                    logger.debug(f"消息多维度评分: {scores}")
-                    return scores
-                else:
-                    return default_scores
-            logger.warning(f"LLM多维度评分模型未返回有效响应，返回默认评分。")
-            return {
-                "content_quality": 0.5,
-                "relevance": 0.5,
-                "emotional_positivity": 0.5,
-                "interactivity": 0.5,
-                "learning_value": 0.5
-            }
-        except Exception as e:
-            logger.error(f"LLM多维度评分失败: {e}")
-            return {
-                "content_quality": 0.5,
-                "relevance": 0.5,
-                "emotional_positivity": 0.5,
-                "interactivity": 0.5,
-                "learning_value": 0.5
-            }
+            try:
+                response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
+                if response:
+                    scores = safe_parse_llm_json(response, fallback_result=default_scores)
+                    
+                    if scores and isinstance(scores, dict):
+                        # 确保所有分数都在0-1之间
+                        for key, value in scores.items():
+                            scores[key] = max(0.0, min(float(value), 1.0))
+                        logger.debug(f"消息多维度评分: {scores}")
+                        return scores
+                    else:
+                        return default_scores
+                logger.warning(f"LLM多维度评分模型未返回有效响应，返回默认评分。")
+                return default_scores
+            except Exception as e:
+                logger.error(f"LLM多维度评分失败: {e}")
+                return default_scores
+
+        # 向后兼容：使用旧的LLM客户端
+        elif self.refine_llm_client and hasattr(self.config, 'refine_api_url') and self.config.refine_api_url:
+            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EVALUATE_MESSAGE_QUALITY_PROMPT.format(
+                current_persona_description=current_persona_description,
+                message_text=message_text
+            )
+            try:
+                response = await self.refine_llm_client.chat_completion(
+                    prompt=prompt,
+                    api_url=self.config.refine_api_url,
+                    api_key=self.config.refine_api_key,
+                    model_name='gpt-4o'  # 使用默认模型名
+                )
+                if response and response.text():
+                    scores = safe_parse_llm_json(response.text(), fallback_result=default_scores)
+                    
+                    if scores and isinstance(scores, dict):
+                        # 确保所有分数都在0-1之间
+                        for key, value in scores.items():
+                            scores[key] = max(0.0, min(float(value), 1.0))
+                        logger.debug(f"消息多维度评分: {scores}")
+                        return scores
+                    else:
+                        return default_scores
+                logger.warning(f"LLM多维度评分模型未返回有效响应，返回默认评分。")
+                return default_scores
+            except Exception as e:
+                logger.error(f"LLM多维度评分失败: {e}")
+                return default_scores
+        else:
+            logger.warning("提炼模型未配置，返回默认评分。")
+            return default_scores
 
     async def analyze_message_context(self, event: AstrMessageEvent, message_text: str) -> Dict[str, Any]:
         """分析消息的多维度上下文"""
@@ -710,11 +751,40 @@ class MultidimensionalAnalyzer:
 
     async def _analyze_emotional_context(self, message_text: str) -> Dict[str, float]:
         """使用LLM分析情感上下文"""
-        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
-            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM分析情感上下文，使用简化算法。")
-            return self._simple_emotional_analysis(message_text)
-
-        try:
+        # 优先使用框架适配器
+        if self.llm_adapter and self.llm_adapter.has_refine_provider():
+            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
+                message_text=message_text
+            )
+            try:
+                response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
+                
+                if response:
+                    # 使用安全的JSON解析方法
+                    emotion_scores = safe_parse_llm_json(
+                        response, 
+                        fallback_result=self._simple_emotional_analysis(message_text)
+                    )
+                    
+                    if emotion_scores and isinstance(emotion_scores, dict):
+                        # 确保所有分数都在0-1之间
+                        for key, value in emotion_scores.items():
+                            emotion_scores[key] = max(0.0, min(float(value), 1.0))
+                        logger.debug(f"情感上下文分析结果: {emotion_scores}")
+                        return emotion_scores
+                    else:
+                        logger.warning(f"LLM情感分析返回格式不正确，使用简化算法")
+                        return self._simple_emotional_analysis(message_text)
+                else:
+                    logger.warning(f"LLM情感分析未返回有效结果，使用简化算法")
+                    return self._simple_emotional_analysis(message_text)
+                    
+            except Exception as e:
+                logger.error(f"LLM情感分析失败: {e}")
+                return self._simple_emotional_analysis(message_text)
+        
+        # 向后兼容：使用旧的LLM客户端
+        elif self.refine_llm_client and hasattr(self.config, 'refine_api_url') and self.config.refine_api_url:
             prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
                 message_text=message_text
             )
@@ -723,7 +793,7 @@ class MultidimensionalAnalyzer:
                     prompt=prompt,
                     api_url=self.config.refine_api_url,
                     api_key=self.config.refine_api_key,
-                    model_name=self.config.refine_model_name
+                    model_name='gpt-4o'  # 使用默认模型名
                 )
                 
                 if response and response.text():
@@ -737,17 +807,22 @@ class MultidimensionalAnalyzer:
                         # 确保所有分数都在0-1之间
                         for key, value in emotion_scores.items():
                             emotion_scores[key] = max(0.0, min(float(value), 1.0))
+                        logger.debug(f"情感上下文分析结果: {emotion_scores}")
                         return emotion_scores
                     else:
+                        logger.warning(f"LLM情感分析返回格式不正确，使用简化算法")
                         return self._simple_emotional_analysis(message_text)
-                return self._simple_emotional_analysis(message_text)
-                
+                else:
+                    logger.warning(f"LLM情感分析未返回有效结果，使用简化算法")
+                    return self._simple_emotional_analysis(message_text)
+                    
             except Exception as e:
-                logger.warning(f"LLM情感分析失败，使用简化算法: {e}")
-        except Exception as e:
-            logger.warning(f"LLM情感分析失败 - 2，使用简化算法: {e}")
+                logger.error(f"LLM情感分析失败: {e}")
+                return self._simple_emotional_analysis(message_text)
+        else:
+            logger.warning("提炼模型未配置，使用简化情感分析算法。")
             return self._simple_emotional_analysis(message_text)
-
+        
     def _simple_emotional_analysis(self, message_text: str) -> Dict[str, float]:
         """简化的情感分析（备用）"""
         emotions = {
@@ -959,8 +1034,12 @@ class MultidimensionalAnalyzer:
         Returns:
             0-1之间的评分。
         """
-        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
+        if not (hasattr(self.config, 'refine_api_url') and hasattr(self.config, 'refine_api_key')):
             logger.warning(f"提炼模型LLM客户端未初始化，无法使用LLM计算{analysis_name}，使用简化算法。")
+            return fallback_function(text)
+            
+        if not (self.config.refine_api_url and self.config.refine_api_key):
+            logger.warning(f"提炼模型LLM客户端配置不完整，无法使用LLM计算{analysis_name}，使用简化算法。")
             return fallback_function(text)
 
         try:
@@ -969,7 +1048,7 @@ class MultidimensionalAnalyzer:
                 prompt=prompt,
                 api_url=self.config.refine_api_url,
                 api_key=self.config.refine_api_key,
-                model_name=self.config.refine_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
             
             if response and response.text():
@@ -1071,8 +1150,12 @@ class MultidimensionalAnalyzer:
 
     async def _generate_deep_insights(self, profile: UserProfile) -> Dict[str, Any]:
         """使用LLM生成深度用户洞察"""
-        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
+        if not (hasattr(self.config, 'refine_api_url') and hasattr(self.config, 'refine_api_key')):
             logger.warning("提炼模型LLM客户端未初始化，无法使用LLM生成深度用户洞察。")
+            return {"error": "LLM服务不可用"}
+            
+        if not (self.config.refine_api_url and self.config.refine_api_key):
+            logger.warning("提炼模型LLM客户端配置不完整，无法使用LLM生成深度用户洞察。")
             return {"error": "LLM服务不可用"}
 
         try:
@@ -1100,7 +1183,7 @@ class MultidimensionalAnalyzer:
                 prompt=prompt,
                 api_url=self.config.refine_api_url,
                 api_key=self.config.refine_api_key,
-                model_name=self.config.refine_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
             
             if response and response.text():
@@ -1123,8 +1206,12 @@ class MultidimensionalAnalyzer:
 
     async def _analyze_personality_traits(self, profile: UserProfile) -> Dict[str, float]:
         """分析用户人格特质"""
-        if not (self.config.refine_api_url and self.config.refine_api_key and self.config.refine_model_name):
+        if not (hasattr(self.config, 'refine_api_url') and hasattr(self.config, 'refine_api_key')):
             logger.warning("提炼模型LLM客户端未初始化，无法使用LLM分析人格特质，使用简化算法。")
+            return self._simple_personality_analysis(profile)
+            
+        if not (self.config.refine_api_url and self.config.refine_api_key):
+            logger.warning("提炼模型LLM客户端配置不完整，无法使用LLM分析人格特质，使用简化算法。")
             return self._simple_personality_analysis(profile)
 
         try:
@@ -1142,7 +1229,7 @@ class MultidimensionalAnalyzer:
                 prompt=prompt,
                 api_url=self.config.refine_api_url,
                 api_key=self.config.refine_api_key,
-                model_name=self.config.refine_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
             
             if response and response.text():

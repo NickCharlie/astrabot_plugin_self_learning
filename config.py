@@ -4,6 +4,7 @@
 import os
 from typing import List, Optional
 from dataclasses import dataclass, field, asdict # 导入 asdict
+from astrbot.api import logger
 # from astrbot.core.utils.astrbot_path import get_astrbot_data_path # 不再直接使用
 
 
@@ -21,23 +22,10 @@ class PluginConfig:
     # QQ号设置
     target_qq_list: List[str] = field(default_factory=list)
     
-    # 模型配置
-    filter_model_name: str = "gpt-4o-mini"  # 筛选模型（弱模型）
-    refine_model_name: str = "gpt-4o"       # 提炼模型（强模型）
-    reinforce_model_name: str = "gpt-4o"    # 强化模型（用于强化学习）
-
-    # LLM 提供商 ID
+    # LLM 提供商 ID（使用 AstrBot 框架的 Provider 系统）
     filter_provider_id: Optional[str] = None  # 筛选模型使用的提供商ID
     refine_provider_id: Optional[str] = None  # 提炼模型使用的提供商ID
     reinforce_provider_id: Optional[str] = None # 强化模型使用的提供商ID
-
-    # API配置 - 支持DeepSeek等OpenAI兼容接口
-    filter_api_url: Optional[str] = None # 筛选模型API URL (如: https://api.deepseek.com)
-    filter_api_key: Optional[str] = None # 筛选模型API Key
-    refine_api_url: Optional[str] = None # 提炼模型API URL (如: https://api.deepseek.com)
-    refine_api_key: Optional[str] = None # 提炼模型API Key
-    reinforce_api_url: Optional[str] = None # 强化模型API URL (如: https://api.deepseek.com)
-    reinforce_api_key: Optional[str] = None # 强化模型API Key
     
     # 当前人格设置
     current_persona_name: str = "default"
@@ -111,6 +99,11 @@ class PluginConfig:
     def create_from_config(cls, config: dict, data_dir: Optional[str] = None) -> 'PluginConfig':
         """从AstrBot配置创建插件配置"""
         
+        # 确保 data_dir 不为空
+        if not data_dir:
+            data_dir = "./data/plugins/astrabot_plugin_self_learning"
+            logger.warning(f"data_dir 为空，使用默认值: {data_dir}")
+        
         # 从配置中提取各个配置组
         # 根据 _conf_schema.json 的结构，配置项是直接在顶层，而不是嵌套在 'self_learning_settings' 下
         basic_settings = config.get('Self_Learning_Basic', {})
@@ -138,20 +131,9 @@ class PluginConfig:
             target_qq_list=target_settings.get('target_qq_list', []),
             current_persona_name=target_settings.get('current_persona_name', 'default'),
             
-            filter_model_name=model_config.get('filter_model_name', 'gpt-4o-mini'),
-            refine_model_name=model_config.get('refine_model_name', 'gpt-4o'),
-            reinforce_model_name=model_config.get('reinforce_model_name', 'gpt-4o'),
-
             filter_provider_id=model_config.get('filter_provider_id', None),
             refine_provider_id=model_config.get('refine_provider_id', None),
             reinforce_provider_id=model_config.get('reinforce_provider_id', None),
-
-            filter_api_url=model_config.get('filter_api_url', None),
-            filter_api_key=model_config.get('filter_api_key', None),
-            refine_api_url=model_config.get('refine_api_url', None),
-            refine_api_key=model_config.get('refine_api_key', None),
-            reinforce_api_url=model_config.get('reinforce_api_url', None),
-            reinforce_api_key=model_config.get('reinforce_api_key', None),
             
             learning_interval_hours=learning_params.get('learning_interval_hours', 6),
             min_messages_for_learning=learning_params.get('min_messages_for_learning', 50),
@@ -238,13 +220,13 @@ class PluginConfig:
         if not 0 <= self.style_update_threshold <= 1:
             errors.append("风格更新阈值必须在0-1之间")
             
-        if not self.filter_model_name:
-            errors.append("筛选模型名称不能为空")
+        if not self.filter_provider_id:
+            errors.append("筛选模型提供商ID不能为空")
             
-        if not self.refine_model_name:
-            errors.append("提炼模型名称不能为空")
+        if not self.refine_provider_id:
+            errors.append("提炼模型提供商ID不能为空")
         
-        if not self.reinforce_model_name:
-            errors.append("强化模型名称不能为空")
+        if not self.reinforce_provider_id:
+            errors.append("强化模型提供商ID不能为空")
             
         return errors

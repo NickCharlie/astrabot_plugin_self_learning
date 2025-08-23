@@ -16,6 +16,7 @@ from .interfaces import (
 from .patterns import StrategyFactory, ServiceRegistry, EventBus
 from ..config import PluginConfig
 from .llm_client import LLMClient # 导入 LLMClient
+from .framework_llm_adapter import FrameworkLLMAdapter # 导入框架LLM适配器
 from ..exceptions import ServiceError # 从 exceptions.py 导入 ServiceError
 from ..statics import prompts # 导入 prompts 模块
 from ..utils.json_utils import safe_parse_llm_json
@@ -34,15 +35,24 @@ class ServiceFactory(IServiceFactory):
         # 服务实例缓存
         self._service_cache: Dict[str, Any] = {}
         
-        # LLM 客户端由专门的方法创建和管理
+        # LLM 客户端和框架适配器
         self._llm_client: Optional[LLMClient] = None
+        self._framework_llm_adapter: Optional[FrameworkLLMAdapter] = None
     
     def create_llm_client(self) -> LLMClient:
-        """创建或获取 LLM 客户端"""
+        """创建或获取 LLM 客户端（保持向后兼容性）"""
         if self._llm_client is None:
             self._llm_client = LLMClient()
             self._logger.info("LLM 客户端初始化成功")
         return self._llm_client
+
+    def create_framework_llm_adapter(self) -> FrameworkLLMAdapter:
+        """创建或获取框架LLM适配器"""
+        if self._framework_llm_adapter is None:
+            self._framework_llm_adapter = FrameworkLLMAdapter(self.context)
+            self._framework_llm_adapter.initialize_providers(self.config)
+            self._logger.info("框架LLM适配器初始化成功")
+        return self._framework_llm_adapter
 
     def get_prompts(self) -> Any:
         """获取 Prompt 静态数据"""
@@ -85,8 +95,9 @@ class ServiceFactory(IServiceFactory):
                 self.config, 
                 self.context, 
                 self.create_database_manager(),
-                self.create_llm_client(), # 传递 LLMClient 实例
-                self.get_prompts() # 传递 prompts
+                llm_adapter=self.create_framework_llm_adapter(),  # 使用框架适配器
+                refine_llm_client=self.create_llm_client(),  # 保持向后兼容
+                prompts=self.get_prompts()  # 传递 prompts
             ) 
             self._service_cache[cache_key] = service
             self._registry.register_service("style_analyzer", service)
@@ -136,8 +147,9 @@ class ServiceFactory(IServiceFactory):
             service = LearningQualityMonitor(
                 self.config, 
                 self.context, 
-                self.create_llm_client(), # 传递 LLMClient
-                self.get_prompts() # 传递 prompts
+                llm_adapter=self.create_framework_llm_adapter(),  # 使用框架适配器
+                llm_client=self.create_llm_client(),  # 保持向后兼容
+                prompts=self.get_prompts()  # 传递 prompts
             ) 
             self._service_cache[cache_key] = service
             self._registry.register_service("quality_monitor", service)
@@ -221,8 +233,8 @@ class ServiceFactory(IServiceFactory):
                 self.config, 
                 self.context, 
                 db_manager, 
-                self.create_llm_client(), # 传递 LLMClient
-                self.get_prompts() # 传递 prompts
+                llm_adapter=self.create_framework_llm_adapter(), # 传递框架适配器
+                prompts=self.get_prompts() # 传递 prompts
             )
             self._service_cache[cache_key] = service
             
@@ -270,18 +282,14 @@ class ServiceFactory(IServiceFactory):
             
             db_manager = self.create_database_manager() # 获取 DatabaseManager 实例
             
-            # 通过工厂方法获取 LLMClient 实例并传递
-            filter_llm_client = self.create_llm_client()
-            refine_llm_client = self.create_llm_client()
-            reinforce_llm_client = self.create_llm_client()
+            # 使用框架LLM适配器替代自定义LLMClient
+            llm_adapter = self.create_framework_llm_adapter()
 
             service = MultidimensionalAnalyzer(
                 self.config, 
                 db_manager, 
                 self.context,
-                filter_llm_client=filter_llm_client,
-                refine_llm_client=refine_llm_client,
-                reinforce_llm_client=reinforce_llm_client,
+                llm_adapter=llm_adapter,  # 传递框架适配器
                 prompts=self.get_prompts() # 传递 prompts
             )
             self._service_cache[cache_key] = service
@@ -518,7 +526,7 @@ class MessageFilter:
             response = await self.llm_client.chat_completion(
                 api_url=self.config.filter_api_url,
                 api_key=self.config.filter_api_key,
-                model_name=self.config.filter_model_name,
+                model_name='gpt-4o',  # 使用默认模型名
                 prompt=prompt,
                 system_prompt="你是一个消息筛选助手，请根据消息内容和当前人格描述，判断消息是否适合用于学习和优化人格。",
                 temperature=0.2 # 降低温度以获得更确定的结果
@@ -738,7 +746,8 @@ class ComponentFactory:
             service = AffectionManager(
                 self.config,
                 self.service_factory.create_database_manager(),
-                self.service_factory.create_llm_client()
+                llm_adapter=self.service_factory.create_framework_llm_adapter(),  # 使用框架适配器
+                llm_client=self.service_factory.create_llm_client()  # 保持向后兼容
             )
             self._service_cache[cache_key] = service
             self._registry.register_service("affection_manager", service)

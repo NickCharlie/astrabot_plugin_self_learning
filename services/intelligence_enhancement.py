@@ -285,7 +285,7 @@ class IntelligenceEnhancementService(AsyncServiceBase):
         
         response = await self.llm_client.generate_response(
             emotion_prompt,
-            model_name=self.config.filter_model_name
+            model_name='gpt-4o'  # 使用默认模型名
         )
         
         try:
@@ -445,7 +445,7 @@ class IntelligenceEnhancementService(AsyncServiceBase):
             
             response = await self.llm_client.generate_response(
                 suggestion_prompt,
-                model_name=self.config.filter_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
             
             return response.strip()
@@ -542,7 +542,7 @@ class IntelligenceEnhancementService(AsyncServiceBase):
         
         response = await self.llm_client.generate_response(
             extraction_prompt,
-            model_name=self.config.filter_model_name
+            model_name='gpt-4o'  # 使用默认模型名
         )
         
         try:
@@ -742,7 +742,7 @@ class IntelligenceEnhancementService(AsyncServiceBase):
                 
                 response = await self.llm_client.generate_response(
                     topic_prompt,
-                    model_name=self.config.filter_model_name
+                    model_name='gpt-4o'  # 使用默认模型名
                 )
                 
                 recommendation = PersonalizedRecommendation(

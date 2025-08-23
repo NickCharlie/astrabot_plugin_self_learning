@@ -14,6 +14,7 @@ from astrbot.api import logger
 from ..config import PluginConfig
 from ..core.patterns import AsyncServiceBase
 from ..core.interfaces import IDataStorage
+from ..core.framework_llm_adapter import FrameworkLLMAdapter  # 导入框架适配器
 from ..core.llm_client import LLMClient
 
 
@@ -103,10 +104,16 @@ class UserAffection:
 class AffectionManager(AsyncServiceBase):
     """好感度管理服务"""
     
-    def __init__(self, config: PluginConfig, database_manager: IDataStorage, llm_client: LLMClient):
+    def __init__(self, config: PluginConfig, database_manager: IDataStorage, 
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None,
+                 # 保持向后兼容
+                 llm_client: Optional[LLMClient] = None):
         super().__init__("affection_manager")
         self.config = config
         self.db_manager = database_manager
+        
+        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        self.llm_adapter = llm_adapter
         self.llm_client = llm_client
         
         # 情绪和好感度状态缓存
@@ -534,23 +541,45 @@ class AffectionManager(AsyncServiceBase):
             请只返回一个类型名称，不要其他内容。
             """
             
-            response = await self.llm_client.chat_completion(
-                api_url=self.config.filter_api_url,
-                api_key=self.config.filter_api_key,
-                model_name=self.config.filter_model_name,
-                prompt=analysis_prompt,
-                temperature=0.1
-            )
-            
-            if response and hasattr(response, 'text'):
-                result = response.text().strip().lower()
+            # 优先使用框架适配器
+            if self.llm_adapter and self.llm_adapter.has_filter_provider():
                 try:
-                    return InteractionType(result)
-                except ValueError:
-                    # LLM返回无效结果，使用规则作为备选
-                    self._logger.warning(f"LLM返回无效的交互类型: {result}，使用规则分析作为备选")
-                    rule_based_type = self._rule_based_interaction_analysis(message)
-                    return rule_based_type if rule_based_type else InteractionType.CHAT
+                    response = await self.llm_adapter.filter_chat_completion(
+                        prompt=analysis_prompt,
+                        temperature=0.1
+                    )
+                    
+                    if response:
+                        result = response.strip().lower()
+                        try:
+                            return InteractionType(result)
+                        except ValueError:
+                            # LLM返回无效结果，使用规则作为备选
+                            self._logger.warning(f"LLM返回无效的交互类型: {result}，使用规则分析作为备选")
+                            rule_based_type = self._rule_based_interaction_analysis(message)
+                            return rule_based_type if rule_based_type else InteractionType.CHAT
+                except Exception as e:
+                    self._logger.error(f"框架适配器分析交互类型失败: {e}，使用规则分析作为备选")
+            
+            # 向后兼容：使用旧的LLM客户端
+            elif self.llm_client:
+                try:
+                    response = await self.llm_client.chat_completion(
+                        prompt=analysis_prompt,
+                        temperature=0.1
+                    )
+                    
+                    if response and hasattr(response, 'text'):
+                        result = response.text().strip().lower()
+                        try:
+                            return InteractionType(result)
+                        except ValueError:
+                            # LLM返回无效结果，使用规则作为备选
+                            self._logger.warning(f"LLM返回无效的交互类型: {result}，使用规则分析作为备选")
+                            rule_based_type = self._rule_based_interaction_analysis(message)
+                            return rule_based_type if rule_based_type else InteractionType.CHAT
+                except Exception as e:
+                    self._logger.error(f"LLM分析交互类型失败: {e}，使用规则分析作为备选")
             
         except Exception as e:
             self._logger.error(f"LLM分析交互类型失败: {e}，使用规则分析作为备选")

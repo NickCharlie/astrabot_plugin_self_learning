@@ -505,7 +505,7 @@ class ProgressiveLearningService:
                     current_persona_json=current_persona_json,
                     style_analysis_json=style_analysis_json
                 ),
-                model_name=self.config.refine_model_name
+                model_name='gpt-4o'  # 使用默认模型名
             )
             
             if response and response.text():

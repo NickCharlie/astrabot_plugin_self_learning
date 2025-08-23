@@ -15,7 +15,6 @@ from hypercorn.config import Config as HypercornConfig
 from .config import PluginConfig
 from .core.factory import FactoryManager
 from .core.interfaces import IPersonaManager, IPersonaUpdater, IDataStorage, PersonaUpdateRecord
-from .core.llm_client import LLMClient
 
 # 获取当前文件所在的目录，然后向上两级到达插件根目录
 PLUGIN_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
@@ -33,7 +32,7 @@ plugin_config: Optional[PluginConfig] = None
 persona_manager: Optional[IPersonaManager] = None
 persona_updater: Optional[IPersonaUpdater] = None
 database_manager: Optional[IDataStorage] = None
-llm_client: Optional[LLMClient] = None
+llm_client = None
 
 # 新增的变量
 pending_updates: List[PersonaUpdateRecord] = []
@@ -72,7 +71,7 @@ def is_authenticated():
 async def set_plugin_services(
     config: PluginConfig,
     factory_manager: FactoryManager,
-    llm_c: LLMClient
+    llm_c = None  # 不再使用LLMClient
 ):
     """设置插件服务实例"""
     global plugin_config, persona_manager, persona_updater, database_manager, llm_client, pending_updates

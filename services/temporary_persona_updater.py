@@ -35,8 +35,8 @@ class TemporaryPersonaUpdater:
                  context: Context,
                  persona_updater: IPersonaUpdater,
                  backup_manager: IPersonaBackupManager,
-                 llm_client: LLMClient,
-                 db_manager: DatabaseManager):
+                 db_manager: DatabaseManager,
+                 llm_client: Optional[LLMClient] = None):
         self.config = config
         self.context = context
         self.persona_updater = persona_updater

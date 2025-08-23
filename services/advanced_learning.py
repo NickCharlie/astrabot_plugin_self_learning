@@ -15,26 +15,26 @@ from astrbot.api import logger
 from ..config import PluginConfig
 from ..core.patterns import AsyncServiceBase
 from ..core.interfaces import IDataStorage, IPersonaManager
-from ..core.llm_client import LLMClient
-from ..core.compatibility_extensions import create_compatibility_extensions
+from ..core.framework_llm_adapter import FrameworkLLMAdapter
 from ..exceptions import LearningError
 
 
 class AdvancedLearningService(AsyncServiceBase):
     """高级学习机制服务"""
     
-    def __init__(self, config: PluginConfig, llm_client: LLMClient, 
-                 database_manager: IDataStorage, persona_manager: IPersonaManager):
+    def __init__(self, config: PluginConfig, 
+                 database_manager: IDataStorage = None, persona_manager: IPersonaManager = None,
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None):
         super().__init__("advanced_learning")
         self.config = config
-        self.llm_client = llm_client
+        self.llm_adapter = llm_adapter  # 使用框架适配器
         self.db_manager = database_manager
         self.persona_manager = persona_manager
         
-        # 创建兼容性扩展
-        extensions = create_compatibility_extensions(config, llm_client, database_manager, persona_manager)
-        self.llm_ext = extensions['llm_client']
-        self.persona_ext = extensions['persona_manager']
+        # 不再使用兼容性扩展，直接使用框架适配器
+        # extensions = create_compatibility_extensions(config, llm_client, database_manager, persona_manager)
+        # self.llm_ext = extensions['llm_client']
+        # self.persona_ext = extensions['persona_manager']
         
         # 人格切换管理
         self.persona_contexts = {}  # group_id -> context_type -> persona_config

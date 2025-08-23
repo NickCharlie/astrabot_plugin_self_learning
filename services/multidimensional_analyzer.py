@@ -1,5 +1,5 @@
 """
-多维度学习引擎 - 全方位分析用户特征和社交关系
+多维度学习引擎 - 全方位分析用户特征和社交关系 - 用户画像
 """
 import re
 import json
@@ -75,21 +75,14 @@ class MultidimensionalAnalyzer:
     
     def __init__(self, config: PluginConfig, db_manager: DatabaseManager, context=None,
                  llm_adapter: Optional[FrameworkLLMAdapter] = None,
-                 # 保持向后兼容的旧参数
-                 filter_llm_client: Optional[LLMClient] = None,
-                 refine_llm_client: Optional[LLMClient] = None,
-                 reinforce_llm_client: Optional[LLMClient] = None,
                  prompts: Any = None): # 添加 prompts 参数
         self.config = config
         self.context = context
         self.db_manager: DatabaseManager = db_manager # 直接传入 DatabaseManager 实例
         self.prompts = prompts # 保存 prompts
 
-        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        # 使用框架适配器
         self.llm_adapter = llm_adapter
-        self.filter_llm_client = filter_llm_client
-        self.refine_llm_client = refine_llm_client
-        self.reinforce_llm_client = reinforce_llm_client
 
         # 检查配置完整性
         if self.llm_adapter:
@@ -100,13 +93,7 @@ class MultidimensionalAnalyzer:
             if not self.llm_adapter.has_reinforce_provider():
                 logger.warning("强化模型Provider未配置。将无法使用LLM进行强化学习。")
         else:
-            # 向后兼容检查
-            if not (self.filter_llm_client and hasattr(config, 'filter_api_url') and config.filter_api_url):
-                logger.warning("筛选模型LLM配置不完整。将无法使用LLM进行消息筛选。")
-            if self.refine_llm_client:
-                logger.info("提炼模型LLM客户端可用（向后兼容模式）")
-            if self.reinforce_llm_client:
-                logger.info("强化模型LLM客户端可用（向后兼容模式）")
+            logger.warning("框架LLM适配器未配置。将无法使用LLM进行高级分析。")
         
         # 用户画像存储
         self.user_profiles: Dict[str, UserProfile] = {}
@@ -290,47 +277,25 @@ class MultidimensionalAnalyzer:
         使用 LLM 对消息进行智能筛选，判断其是否与当前人格匹配、特征鲜明且有学习意义。
         返回 True 表示消息通过筛选，False 表示不通过。
         """
-        # 优先使用框架适配器
+        # 使用框架适配器
         if self.llm_adapter and self.llm_adapter.has_filter_provider():
             prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT.format(
                 current_persona_description=current_persona_description,
                 message_text=message_text
             )
             try:
-                response = await self.llm_adapter.filter_chat_completion(prompt=prompt)
+                response = await self.llm_adapter.filter_chat_completion(
+                    prompt=prompt,
+                    temperature=0.1
+                )
                 if response:
-                    # 直接解析数值，不需要JSON处理
+                    # 解析置信度
                     numbers = re.findall(r'0\.\d+|1\.0|0', response.strip())
                     if numbers:
                         confidence = min(float(numbers[0]), 1.0)
                         logger.debug(f"消息筛选置信度: {confidence} (阈值: {self.config.confidence_threshold})")
                         return confidence >= self.config.confidence_threshold
-                logger.warning(f"LLM筛选模型未返回有效置信度，消息默认不通过筛选。")
-                return False
-            except Exception as e:
-                logger.error(f"LLM消息筛选失败: {e}")
-                return False
-        
-        # 向后兼容：使用旧的LLM客户端
-        elif self.filter_llm_client and hasattr(self.config, 'filter_api_url') and self.config.filter_api_url:
-            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT.format(
-                current_persona_description=current_persona_description,
-                message_text=message_text
-            )
-            try:
-                response = await self.filter_llm_client.chat_completion(
-                    prompt=prompt,
-                    api_url=self.config.filter_api_url,
-                    api_key=self.config.filter_api_key,
-                    model_name='gpt-4o-mini'  # 使用默认模型名
-                )
-                if response and response.text():
-                    numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
-                    if numbers:
-                        confidence = min(float(numbers[0]), 1.0)
-                        logger.debug(f"消息筛选置信度: {confidence} (阈值: {self.config.confidence_threshold})")
-                        return confidence >= self.config.confidence_threshold
-                logger.warning(f"LLM筛选模型未返回有效置信度，消息默认不通过筛选。")
+                logger.warning(f"框架适配器筛选未返回有效置信度，消息默认不通过筛选。")
                 return False
             except Exception as e:
                 logger.error(f"LLM消息筛选失败: {e}")
@@ -363,36 +328,6 @@ class MultidimensionalAnalyzer:
                 response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
                 if response:
                     scores = safe_parse_llm_json(response, fallback_result=default_scores)
-                    
-                    if scores and isinstance(scores, dict):
-                        # 确保所有分数都在0-1之间
-                        for key, value in scores.items():
-                            scores[key] = max(0.0, min(float(value), 1.0))
-                        logger.debug(f"消息多维度评分: {scores}")
-                        return scores
-                    else:
-                        return default_scores
-                logger.warning(f"LLM多维度评分模型未返回有效响应，返回默认评分。")
-                return default_scores
-            except Exception as e:
-                logger.error(f"LLM多维度评分失败: {e}")
-                return default_scores
-
-        # 向后兼容：使用旧的LLM客户端
-        elif self.refine_llm_client and hasattr(self.config, 'refine_api_url') and self.config.refine_api_url:
-            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EVALUATE_MESSAGE_QUALITY_PROMPT.format(
-                current_persona_description=current_persona_description,
-                message_text=message_text
-            )
-            try:
-                response = await self.refine_llm_client.chat_completion(
-                    prompt=prompt,
-                    api_url=self.config.refine_api_url,
-                    api_key=self.config.refine_api_key,
-                    model_name='gpt-4o'  # 使用默认模型名
-                )
-                if response and response.text():
-                    scores = safe_parse_llm_json(response.text(), fallback_result=default_scores)
                     
                     if scores and isinstance(scores, dict):
                         # 确保所有分数都在0-1之间
@@ -783,23 +718,21 @@ class MultidimensionalAnalyzer:
                 logger.error(f"LLM情感分析失败: {e}")
                 return self._simple_emotional_analysis(message_text)
         
-        # 向后兼容：使用旧的LLM客户端
-        elif self.refine_llm_client and hasattr(self.config, 'refine_api_url') and self.config.refine_api_url:
+        # 使用框架适配器进行情感上下文分析
+        elif self.llm_adapter and self.llm_adapter.has_refine_provider():
             prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
                 message_text=message_text
             )
             try:
-                response = await self.refine_llm_client.chat_completion(
+                response = await self.llm_adapter.refine_chat_completion(
                     prompt=prompt,
-                    api_url=self.config.refine_api_url,
-                    api_key=self.config.refine_api_key,
-                    model_name='gpt-4o'  # 使用默认模型名
+                    temperature=0.2
                 )
                 
-                if response and response.text():
+                if response:
                     # 使用安全的JSON解析方法
                     emotion_scores = safe_parse_llm_json(
-                        response.text(), 
+                        response.strip(), 
                         fallback_result=self._simple_emotional_analysis(message_text)
                     )
                     
@@ -1044,12 +977,13 @@ class MultidimensionalAnalyzer:
 
         try:
             prompt = prompt_template.format(text=text)
-            response = await self.refine_llm_client.chat_completion(
-                prompt=prompt,
-                api_url=self.config.refine_api_url,
-                api_key=self.config.refine_api_key,
-                model_name='gpt-4o'  # 使用默认模型名
-            )
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                response = await self.llm_adapter.refine_chat_completion(
+                    prompt=prompt,
+                    temperature=0.1
+                )
+            else:
+                response = None
             
             if response and response.text():
                 numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
@@ -1179,12 +1113,13 @@ class MultidimensionalAnalyzer:
                 user_data_summary=json.dumps(user_data_summary, ensure_ascii=False, indent=2)
             )
             
-            response = await self.refine_llm_client.chat_completion(
-                prompt=prompt,
-                api_url=self.config.refine_api_url,
-                api_key=self.config.refine_api_key,
-                model_name='gpt-4o'  # 使用默认模型名
-            )
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                response = await self.llm_adapter.refine_chat_completion(
+                    prompt=prompt,
+                    temperature=0.1
+                )
+            else:
+                response = None
             
             if response and response.text():
                 try:
@@ -1225,12 +1160,13 @@ class MultidimensionalAnalyzer:
                 communication_style_data=json.dumps(recent_styles, ensure_ascii=False, indent=2)
             )
             
-            response = await self.refine_llm_client.chat_completion(
-                prompt=prompt,
-                api_url=self.config.refine_api_url,
-                api_key=self.config.refine_api_key,
-                model_name='gpt-4o'  # 使用默认模型名
-            )
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                response = await self.llm_adapter.refine_chat_completion(
+                    prompt=prompt,
+                    temperature=0.1
+                )
+            else:
+                response = None
             
             if response and response.text():
                 try:

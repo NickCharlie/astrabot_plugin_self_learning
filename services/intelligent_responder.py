@@ -13,7 +13,6 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.core.platform.message_type import MessageType
 
 from ..core.framework_llm_adapter import FrameworkLLMAdapter  # 导入框架适配器
-from ..core.llm_client import LLMClient  # 保持向后兼容
 from ..config import PluginConfig
 from ..exceptions import ResponseError
 
@@ -34,17 +33,14 @@ class IntelligentResponder:
     
     def __init__(self, config: PluginConfig, context: Context, db_manager, 
                  llm_adapter: Optional[FrameworkLLMAdapter] = None,
-                 # 保持向后兼容
-                 llm_client: Optional[LLMClient] = None,
                  prompts: Any = None):
         self.config = config
         self.context = context
         self.db_manager = db_manager
         self.prompts = prompts
         
-        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        # 使用框架适配器
         self.llm_adapter = llm_adapter
-        self.llm_client = llm_client
         
         # 设置默认回复策略 - 不依赖配置文件
         self.enable_intelligent_reply = True  # 默认启用智能回复
@@ -125,7 +121,7 @@ class IntelligentResponder:
                 logger.warning("未找到可用的LLM提供商")
                 return None
             
-            # 优先使用框架适配器
+            # 使用框架适配器
             if self.llm_adapter and self.llm_adapter.has_refine_provider():
                 try:
                     response = await self.llm_adapter.refine_chat_completion(
@@ -145,28 +141,6 @@ class IntelligentResponder:
                         return None
                 except Exception as e:
                     logger.error(f"框架适配器生成回复失败: {e}")
-                    return None
-            
-            # 向后兼容：使用旧的LLM客户端  
-            elif self.llm_client:
-                try:
-                    response = await self.llm_client.chat_completion(
-                        prompt=message_text,  # 用户消息只包含原始消息
-                        system_prompt=enhanced_system_prompt,  # 原有PROMPT + 增量更新
-                        temperature=0.7,
-                        max_tokens=self.PROMPT_RESPONSE_WORD_LIMIT
-                    )
-                    
-                    if response and response.text():
-                        response_text = response.text().strip()
-                        # 记录回复
-                        await self._record_response(group_id, sender_id, message_text, response_text)
-                        return response_text
-                    else:
-                        logger.warning("LLM 未返回有效回复。")
-                        return None
-                except Exception as e:
-                    logger.error(f"LLM客户端生成回复失败: {e}")
                     return None
             else:
                 logger.warning("没有可用的LLM服务")

@@ -20,8 +20,7 @@ from ..config import PluginConfig
 from ..core.patterns import AsyncServiceBase
 from ..utils.json_utils import safe_parse_llm_json
 from ..core.interfaces import IDataStorage, IPersonaManager
-from ..core.llm_client import LLMClient
-from ..core.compatibility_extensions import create_compatibility_extensions
+from ..core.framework_llm_adapter import FrameworkLLMAdapter
 
 
 @dataclass
@@ -65,18 +64,19 @@ class PersonalizedRecommendation:
 class IntelligenceEnhancementService(AsyncServiceBase):
     """智能化提升服务"""
     
-    def __init__(self, config: PluginConfig, llm_client: LLMClient, 
-                 database_manager: IDataStorage, persona_manager: IPersonaManager):
+    def __init__(self, config: PluginConfig, 
+                 database_manager: IDataStorage = None, persona_manager: IPersonaManager = None,
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None):
         super().__init__("intelligence_enhancement")
         self.config = config
-        self.llm_client = llm_client
+        self.llm_adapter = llm_adapter  # 使用框架适配器
         self.db_manager = database_manager
         self.persona_manager = persona_manager
         
-        # 创建兼容性扩展
-        extensions = create_compatibility_extensions(config, llm_client, database_manager, persona_manager)
-        self.llm_ext = extensions['llm_client']
-        self.persona_ext = extensions['persona_manager']
+        # 不再使用兼容性扩展，直接使用框架适配器
+        # extensions = create_compatibility_extensions(config, llm_client, database_manager, persona_manager)
+        # self.llm_ext = extensions['llm_client']
+        # self.persona_ext = extensions['persona_manager']
         
         # 情感智能
         self.emotion_profiles: Dict[str, EmotionProfile] = {}
@@ -283,17 +283,22 @@ class IntelligenceEnhancementService(AsyncServiceBase):
         只返回JSON，不要其他内容。
         """
         
-        response = await self.llm_client.generate_response(
-            emotion_prompt,
-            model_name='gpt-4o'  # 使用默认模型名
-        )
+        # 使用框架适配器进行情感分析
+        if self.llm_adapter and self.llm_adapter.has_filter_provider():
+            try:
+                response = await self.llm_adapter.filter_chat_completion(
+                    prompt=emotion_prompt,
+                    temperature=0.1
+                )
+                if response:
+                    # 使用安全的JSON解析
+                    default_emotions = {}
+                    return safe_parse_llm_json(response.strip(), fallback_result=default_emotions)
+            except Exception as e:
+                logger.warning(f"框架适配器情感识别失败: {e}")
         
-        try:
-            # 使用安全的JSON解析
-            default_emotions = {}
-            return safe_parse_llm_json(response.strip(), fallback_result=default_emotions)
-        except Exception:
-            return {}
+        # 框架适配器不可用时返回默认结果
+        return {}
     
     async def _analyze_context_emotions(self, context_messages: List[Dict]) -> Dict[str, float]:
         """分析上下文情感"""
@@ -443,16 +448,25 @@ class IntelligenceEnhancementService(AsyncServiceBase):
             只返回建议的回应内容，不要其他说明。
             """
             
-            response = await self.llm_client.generate_response(
-                suggestion_prompt,
-                model_name='gpt-4o'  # 使用默认模型名
-            )
             
-            return response.strip()
+            # 使用框架适配器生成情感回应建议
+            if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                try:
+                    response = await self.llm_adapter.refine_chat_completion(
+                        prompt=suggestion_prompt,
+                        temperature=0.7
+                    )
+                    if response:
+                        return response.strip()
+                except Exception as e:
+                    self._logger.error(f"框架适配器生成情感回应建议失败: {e}")
+            
+            # 框架适配器不可用时的默认回应
+            return ""
             
         except Exception as e:
             self._logger.error(f"情感回应建议生成失败: {e}")
-            return "我理解你的感受。"
+            return ""
     
     async def extract_knowledge_entities(self, group_id: str, messages: List[Dict]) -> Dict[str, Any]:
         """提取知识实体并构建知识图谱"""
@@ -540,26 +554,29 @@ class IntelligenceEnhancementService(AsyncServiceBase):
         只返回JSON数组，不要其他内容。
         """
         
-        response = await self.llm_client.generate_response(
-            extraction_prompt,
-            model_name='gpt-4o'  # 使用默认模型名
-        )
+        # 使用框架适配器进行实体提取
+        if self.llm_adapter and self.llm_adapter.has_refine_provider():
+            try:
+                response = await self.llm_adapter.refine_chat_completion(
+                    prompt=extraction_prompt,
+                    temperature=0.1
+                )
+                if response:
+                    # 使用安全的JSON解析
+                    default_entities = []
+                    entities_data = safe_parse_llm_json(response.strip(), fallback_result=default_entities)
+                    
+                    if entities_data and isinstance(entities_data, list):
+                        return [{
+                            **entity,
+                            'source_message': content[:200],
+                            'timestamp': time.time()
+                        } for entity in entities_data]
+            except Exception as e:
+                logger.error(f"框架适配器实体提取失败: {e}")
         
-        try:
-            # 使用安全的JSON解析
-            default_entities = []
-            entities_data = safe_parse_llm_json(response.strip(), fallback_result=default_entities)
-            
-            if entities_data and isinstance(entities_data, list):
-                return [{
-                    **entity,
-                    'source_message': content[:200],
-                    'timestamp': time.time()
-                } for entity in entities_data]
-            else:
-                return []
-        except Exception:
-            return []
+        # 框架适配器不可用时返回默认结果
+        return []
     
     async def _update_knowledge_graph(self, group_id: str, entities: List[Dict]):
         """更新知识图谱"""
@@ -740,16 +757,28 @@ class IntelligenceEnhancementService(AsyncServiceBase):
                 只返回推荐内容，不要其他说明。
                 """
                 
-                response = await self.llm_client.generate_response(
-                    topic_prompt,
-                    model_name='gpt-4o'  # 使用默认模型名
-                )
+                # 使用框架适配器生成推荐内容
+                if self.llm_adapter and self.llm_adapter.has_refine_provider():
+                    try:
+                        response = await self.llm_adapter.refine_chat_completion(
+                            prompt=topic_prompt,
+                            temperature=0.6
+                        )
+                        if response:
+                            content = response.strip()
+                        else:
+                            content = f"建议您进一步了解'{topic}'相关的内容"
+                    except Exception as e:
+                        self._logger.error(f"框架适配器生成推荐失败: {e}")
+                        content = f"建议您进一步了解'{topic}'相关的内容"
+                else:
+                    content = f"建议您进一步了解'{topic}'相关的内容"
                 
                 recommendation = PersonalizedRecommendation(
                     user_id=user_id,
                     group_id=group_id,
                     recommendation_type='topic_suggestion',
-                    content=response.strip(),
+                    content=content,
                     confidence=0.8,
                     reasoning=f"基于用户对'{topic}'的兴趣",
                     timestamp=time.time()

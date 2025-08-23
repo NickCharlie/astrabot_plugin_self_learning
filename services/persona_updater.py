@@ -3,6 +3,7 @@
 """
 import logging
 import time # 导入 time 模块
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 from astrbot.api.star import Context
@@ -10,6 +11,7 @@ from astrbot.core.provider.provider import Personality
 from ..config import PluginConfig
 from ..core.interfaces import IPersonaUpdater, IPersonaBackupManager, MessageData, AnalysisResult, PersonaUpdateRecord # 导入 PersonaUpdateRecord
 from ..core.llm_client import LLMClient # 导入 LLMClient
+from ..exceptions import PersonaUpdateError, SelfLearningError # 导入 PersonaUpdateError
 from .database_manager import DatabaseManager # 导入 DatabaseManager
 
 
@@ -19,7 +21,7 @@ class PersonaUpdater(IPersonaUpdater):
     直接操作框架的 curr_personality 属性
     """
     
-    def __init__(self, config: PluginConfig, context: Context, backup_manager: IPersonaBackupManager, llm_client: LLMClient, db_manager: DatabaseManager):
+    def __init__(self, config: PluginConfig, context: Context, backup_manager: IPersonaBackupManager, llm_client: Optional[LLMClient] = None, db_manager: DatabaseManager = None):
         self.config = config
         self.context = context
         self.backup_manager = backup_manager

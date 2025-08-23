@@ -45,17 +45,14 @@ class StyleAnalyzerService:
     
     def __init__(self, config: PluginConfig, context: Context, database_manager: DatabaseManager, 
                  llm_adapter: Optional[FrameworkLLMAdapter] = None,
-                 # 保持向后兼容
-                 refine_llm_client: Optional[LLMClient] = None, 
                  prompts: Any = None):
         self.config = config
         self.context = context
         self.db_manager = database_manager  # 注入 DatabaseManager 实例
         self.prompts = prompts  # 保存 prompts
         
-        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        # 使用框架适配器
         self.llm_adapter = llm_adapter
-        self.refine_llm_client = refine_llm_client  # 保存 LLMClient 实例
         
         # 风格演化历史
         self.style_evolution_history: List[StyleEvolution] = []
@@ -131,9 +128,10 @@ class StyleAnalyzerService:
             # 优先使用框架适配器
             if self.llm_adapter and self.llm_adapter.has_refine_provider():
                 response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-            # 向后兼容：使用传入的LLM客户端
+            # 向后兼容：LLMClient已弃用，跳过
             elif llm_client:
-                response = await llm_client.chat_completion(prompt=prompt)
+                # LLMClient已弃用，返回错误信息
+                return {"error": "LLMClient已弃用，请使用FrameworkLLMAdapter"}
             else:
                 logger.warning("没有可用的LLM服务")
                 return {"error": "LLM服务不可用"}
@@ -169,9 +167,10 @@ class StyleAnalyzerService:
             # 优先使用框架适配器
             if self.llm_adapter and self.llm_adapter.has_refine_provider():
                 response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-            # 向后兼容：使用传入的LLM客户端
+            # 向后兼容：LLMClient已弃用，跳过
             elif llm_client:
-                response = await llm_client.chat_completion(prompt=prompt)
+                # LLMClient已弃用，返回默认StyleProfile
+                return StyleProfile()
             else:
                 logger.warning("没有可用的LLM服务")
                 return StyleProfile()
@@ -254,12 +253,6 @@ class StyleAnalyzerService:
         
         return min(confidence, 1.0)
 
-    def _get_refine_model_client(self) -> Optional[LLMClient]:
-        """获取提炼模型LLM客户端"""
-        if not self.refine_llm_client:
-            logger.warning("提炼模型LLM客户端未初始化。")
-        return self.refine_llm_client
-
     async def get_style_trends(self) -> Dict[str, Any]:
         """获取风格趋势分析"""
         if not self.style_evolution_history:
@@ -308,9 +301,10 @@ class StyleAnalyzerService:
             # 优先使用框架适配器
             if self.llm_adapter and self.llm_adapter.has_refine_provider():
                 response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-            # 向后兼容：使用传入的LLM客户端
+            # 向后兼容：LLMClient已弃用，跳过
             elif llm_client:
-                response = await llm_client.chat_completion(prompt=prompt)
+                # LLMClient已弃用，返回错误信息
+                return {"error": "LLMClient已弃用，请使用FrameworkLLMAdapter"}
             else:
                 logger.warning("没有可用的LLM服务")
                 return {"error": "LLM服务不可用"}

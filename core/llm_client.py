@@ -23,6 +23,7 @@ class LLMClient:
     """
     封装自定义 LLM API 调用的客户端。
     用于根据配置的 API URL 和 API Key 调用不同的 LLM。
+    ！！！已弃用！！！
     """
 
     def __init__(self):
@@ -51,10 +52,10 @@ class LLMClient:
 
     async def chat_completion(
         self,
-        api_url: str,
-        api_key: str,
-        model_name: str,
-        prompt: str,
+        api_url: str = None,
+        api_key: str = None, 
+        model_name: str = None,
+        prompt: str = None,
         contexts: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
         max_retries: int = 3,
@@ -78,17 +79,9 @@ class LLMClient:
         Returns:
             LLMResponse 对象或 None
         """
-        # 参数验证
-        if not api_url:
-            logger.error("API URL 不能为空")
-            return None
-        
-        if not api_key:
-            logger.error("API Key 不能为空")
-            return None
-        
-        if not model_name:
-            logger.error("模型名称不能为空")
+        # 参数验证 - 如果参数为空，返回警告并返回None
+        if not api_url or not api_key or not model_name or not prompt:
+            logger.warning(f"LLMClient参数不完整: api_url={bool(api_url)}, api_key={bool(api_key)}, model_name={bool(model_name)}, prompt={bool(prompt)}")
             return None
         
         headers = {

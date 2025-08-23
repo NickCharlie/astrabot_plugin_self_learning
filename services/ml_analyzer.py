@@ -24,7 +24,7 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
-from ..core.llm_client import LLMClient # 导入 LLMClient
+from ..core.framework_llm_adapter import FrameworkLLMAdapter # 导入框架适配器
 from .database_manager import DatabaseManager # 确保 DatabaseManager 被正确导入
 from ..utils.json_utils import safe_parse_llm_json
 
@@ -33,12 +33,11 @@ class LightweightMLAnalyzer:
     """轻量级机器学习分析器 - 使用简单的ML算法进行数据分析"""
     
     def __init__(self, config: PluginConfig, db_manager: DatabaseManager, 
-                 refine_llm_client: Optional[LLMClient], reinforce_llm_client: Optional[LLMClient],
-                 prompts: Any): # 添加 prompts 参数
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None,
+                 prompts: Any = None): # 使用框架适配器替代LLMClient
         self.config = config
         self.db_manager = db_manager
-        self.refine_llm_client = refine_llm_client
-        self.reinforce_llm_client = reinforce_llm_client
+        self.llm_adapter = llm_adapter  # 使用框架适配器
         self.prompts = prompts # 保存 prompts
         
         # 设置分析限制以节省资源
@@ -63,8 +62,8 @@ class LightweightMLAnalyzer:
         """
         强化学习记忆重放：通过强化模型分析历史数据和新数据的关联性，优化学习策略
         """
-        if not self.reinforce_llm_client:
-            logger.warning("强化模型LLM客户端未初始化，无法执行强化学习记忆重放。")
+        if not self.llm_adapter or not self.llm_adapter.has_reinforce_provider():
+            logger.warning("强化模型LLM适配器未配置，无法执行强化学习记忆重放。")
             return {}
 
         try:
@@ -87,13 +86,13 @@ class LightweightMLAnalyzer:
             }
 
             # 调用强化模型进行记忆重放分析
-            response = await self.reinforce_llm_client.chat_completion(
+            response = await self.llm_adapter.reinforce_chat_completion(
                 prompt=self.prompts.REINFORCEMENT_LEARNING_MEMORY_REPLAY_PROMPT.format(
                     historical_learning_data=json.dumps(historical_summary, ensure_ascii=False, indent=2),
                     new_learning_data=json.dumps(new_data_summary, ensure_ascii=False, indent=2),
                     current_persona=json.dumps(current_persona, ensure_ascii=False, indent=2)
                 ),
-                model_name='gpt-4o'  # 使用默认模型名
+                temperature=0.7
             )
 
             if response and response.text():
@@ -129,8 +128,8 @@ class LightweightMLAnalyzer:
         """
         强化学习增量微调：通过强化模型智能融合基础人格和增量更新
         """
-        if not self.reinforce_llm_client:
-            logger.warning("强化模型LLM客户端未初始化，无法执行增量微调。")
+        if not self.llm_adapter or not self.llm_adapter.has_reinforce_provider():
+            logger.warning("强化模型LLM适配器未配置，无法执行增量微调。")
             return {}
 
         try:
@@ -138,13 +137,13 @@ class LightweightMLAnalyzer:
             fusion_history = await self.db_manager.get_persona_fusion_history(group_id, limit=10)
             
             # 调用强化模型进行增量微调分析
-            response = await self.reinforce_llm_client.chat_completion(
+            response = await self.llm_adapter.reinforce_chat_completion(
                 prompt=self.prompts.REINFORCEMENT_LEARNING_INCREMENTAL_TUNING_PROMPT.format(
                     base_persona=json.dumps(base_persona, ensure_ascii=False, indent=2),
                     incremental_updates=json.dumps(incremental_updates, ensure_ascii=False, indent=2),
                     fusion_history=json.dumps(fusion_history, ensure_ascii=False, indent=2)
                 ),
-                model_name='gpt-4o'  # 使用默认模型名
+                temperature=0.6
             )
 
             if response and response.text():
@@ -179,8 +178,8 @@ class LightweightMLAnalyzer:
         """
         强化学习策略优化：基于历史表现数据动态调整学习策略
         """
-        if not self.reinforce_llm_client:
-            logger.warning("强化模型LLM客户端未初始化，无法执行策略优化。")
+        if not self.llm_adapter or not self.llm_adapter.has_reinforce_provider():
+            logger.warning("强化模型LLM适配器未配置，无法执行策略优化。")
             return {}
 
         try:
@@ -196,13 +195,13 @@ class LightweightMLAnalyzer:
             performance_metrics = self._calculate_performance_metrics(learning_history)
             
             # 调用强化模型进行策略优化
-            response = await self.reinforce_llm_client.chat_completion(
+            response = await self.llm_adapter.reinforce_chat_completion(
                 prompt=self.prompts.REINFORCEMENT_LEARNING_STRATEGY_OPTIMIZATION_PROMPT.format(
                     learning_history=json.dumps(learning_history, ensure_ascii=False, indent=2),
                     current_strategy=json.dumps(current_strategy, ensure_ascii=False, indent=2),
                     performance_metrics=json.dumps(performance_metrics, ensure_ascii=False, indent=2)
                 ),
-                model_name='gpt-4o'  # 使用默认模型名
+                temperature=0.5
             )
 
             if response and response.text():
@@ -275,8 +274,8 @@ class LightweightMLAnalyzer:
         记忆重放：将历史数据与新数据混合，并交给提炼模型进行处理。
         这模拟了LLM的"增量微调"过程，通过重新暴露历史数据来巩固学习。
         """
-        if not self.refine_llm_client:
-            logger.warning("提炼模型LLM客户端未初始化，无法执行记忆重放。")
+        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
+            logger.warning("提炼模型LLM适配器未配置，无法执行记忆重放。")
             return []
 
         try:
@@ -302,16 +301,17 @@ class LightweightMLAnalyzer:
             # 示例：让LLM总结这些消息的特点，并与当前人格进行对比
             messages_text = "\n".join([msg['message'] for msg in sorted_messages])
             
-            system_prompt = self.prompts.ML_ANALYZER_REPLAY_MEMORY_SYSTEM_PROMPT.format(
+            prompt = f"""{self.prompts.ML_ANALYZER_REPLAY_MEMORY_SYSTEM_PROMPT.format(
                 current_persona_description=current_persona['description']
-            )
-            prompt = self.prompts.ML_ANALYZER_REPLAY_MEMORY_PROMPT.format(
-                messages_text=messages_text
-            )
+            )}
 
-            response = await self.refine_llm_client.chat_completion(
+{self.prompts.ML_ANALYZER_REPLAY_MEMORY_PROMPT.format(
+                messages_text=messages_text
+            )}"""
+
+            response = await self.llm_adapter.refine_chat_completion(
                 prompt=prompt,
-                system_prompt=system_prompt
+                temperature=0.3
             )
 
             if response and response.text():
@@ -421,61 +421,6 @@ class LightweightMLAnalyzer:
             return 0.0
         
         return (second_half_avg - first_half_avg) / first_half_avg
-
-    async def replay_memory(self, group_id: str, new_messages: List[Dict[str, Any]], current_persona: Dict[str, Any]) -> List[Dict[str, Any]]:
-        if not self.refine_llm_client:
-            logger.warning("提炼模型LLM客户端未初始化，无法执行记忆重放。")
-            return []
-
-        try:
-            # 获取最近一段时间的历史消息
-            # 假设我们获取过去30天的消息作为历史数据
-            history_messages = await self.db_manager.get_messages_for_replay(group_id, days=30, limit=self.config.max_messages_per_batch * 2)
-            
-            # 将新消息与历史消息混合
-            # 可以根据时间戳进行排序，或者简单地拼接
-            all_messages = history_messages + new_messages
-            # 确保消息不重复，并按时间排序
-            unique_messages = {msg['message_id']: msg for msg in all_messages}
-            sorted_messages = sorted(unique_messages.values(), key=lambda x: x['timestamp'])
-            
-            # 限制总消息数量，避免过大的上下文
-            if len(sorted_messages) > self.config.max_messages_per_batch * 2:
-                sorted_messages = sorted_messages[-self.config.max_messages_per_batch * 2:]
-
-            logger.info(f"执行记忆重放，混合消息数量: {len(sorted_messages)}")
-
-            # 将混合后的消息交给提炼模型进行处理
-            # 这里可以设计一个更复杂的prompt，让LLM从这些消息中提炼新的知识或风格
-            # 示例：让LLM总结这些消息的特点，并与当前人格进行对比
-            messages_text = "\n".join([msg['message'] for msg in sorted_messages])
-            
-            system_prompt = self.prompts.ML_ANALYZER_REPLAY_MEMORY_SYSTEM_PROMPT.format(
-                current_persona_description=current_persona['description']
-            )
-            prompt = self.prompts.ML_ANALYZER_REPLAY_MEMORY_PROMPT.format(
-                messages_text=messages_text
-            )
-
-            response = await self.refine_llm_client.chat_completion(
-                prompt=prompt,
-                system_prompt=system_prompt
-            )
-
-            if response and response.text():
-                try:
-                    refined_data = safe_parse_llm_json(response.text())
-                    logger.info(f"记忆重放提炼结果: {refined_data}")
-                    # 这里可以将 refined_data 传递给 PersonaUpdater 进行人格更新
-                    # 或者在 ProgressiveLearning 模块中处理
-                    return refined_data
-                except json.JSONDecodeError:
-                    logger.error(f"提炼模型返回的JSON格式不正确: {response.text()}")
-                    return {}
-            return {}
-        except Exception as e:
-            logger.error(f"执行记忆重放失败: {e}")
-            return {}
 
     async def train_strategy_model(self, X: np.ndarray, y: np.ndarray, model_type: str = "logistic_regression"):
         """
@@ -788,8 +733,8 @@ class LightweightMLAnalyzer:
 
     async def _analyze_sentiment_with_llm(self, messages: List[Dict[str, Any]]) -> Dict[str, float]:
         """使用LLM对消息列表进行情感分析"""
-        if not self.refine_llm_client:
-            logger.warning("提炼模型LLM客户端未初始化，无法使用LLM进行情感分析，使用简化算法。")
+        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
+            logger.warning("提炼模型LLM适配器未配置，无法使用LLM进行情感分析，使用简化算法。")
             return self._simple_sentiment_analysis(messages)
 
         messages_text = "\n".join([msg['message'] for msg in messages])
@@ -798,10 +743,14 @@ class LightweightMLAnalyzer:
             messages_text=messages_text
         )
         try:
-            response = await self.refine_llm_client.chat_completion(prompt=prompt)
-            if response and response.text():
+            response = await self.llm_adapter.refine_chat_completion(
+                prompt=prompt,
+                temperature=0.3
+            )
+            
+            if response:
                 try:
-                    sentiment_scores = safe_parse_llm_json(response.text())
+                    sentiment_scores = safe_parse_llm_json(response)
                     # 确保所有分数都在0-1之间
                     for key, value in sentiment_scores.items():
                         sentiment_scores[key] = max(0.0, min(float(value), 1.0))

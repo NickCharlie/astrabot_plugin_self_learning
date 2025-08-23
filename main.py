@@ -213,7 +213,7 @@ class SelfLearningPlugin(star.Star):
                 await set_plugin_services(
                     self.plugin_config,
                     self.factory_manager, # 传递 factory_manager
-                    self.service_factory.create_llm_client() # 传递 LLMClient 实例
+                    None  # 不再传递已弃用的 LLMClient
                 )
                 logger.info("Web服务器插件服务设置完成")
             except Exception as e:

@@ -45,6 +45,7 @@ class ProgressiveLearningService:
                  style_analyzer: StyleAnalyzerService,
                  quality_monitor: LearningQualityMonitor,
                  persona_manager: PersonaManagerService, # 添加 persona_manager 参数
+                 ml_analyzer, # 添加 ml_analyzer 参数
                  prompts: Any): # 添加 prompts 参数
         self.config = config
         self.context = context
@@ -56,6 +57,7 @@ class ProgressiveLearningService:
         self.style_analyzer = style_analyzer
         self.quality_monitor = quality_monitor
         self.persona_manager = persona_manager # 注入 persona_manager
+        self.ml_analyzer = ml_analyzer # 注入 ml_analyzer
         self.prompts = prompts  # 保存 prompts 实例
         
         # 学习状态 - 使用字典管理每个群组的学习状态
@@ -483,44 +485,41 @@ class ProgressiveLearningService:
     async def _generate_updated_persona_with_refinement(self, group_id: str, current_persona: Dict[str, Any], style_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """使用提炼模型生成更新后的人格"""
         try:
-            # 使用提炼模型生成人格更新
-            from ..core.factory import LLMClient
-            
-            # 获取提炼模型客户端
-            refine_client = None
-            if hasattr(self, 'multidimensional_analyzer') and hasattr(self.multidimensional_analyzer, 'refine_llm_client'):
-                refine_client = self.multidimensional_analyzer.refine_llm_client
-            
-            if not refine_client:
-                logger.warning("提炼模型客户端未找到，使用传统方法生成人格")
-                return await self._generate_updated_persona(group_id, current_persona, style_analysis)
-            
-            # 准备输入数据
-            current_persona_json = json.dumps(current_persona, ensure_ascii=False, indent=2)
-            style_analysis_json = json.dumps(style_analysis, ensure_ascii=False, indent=2)
-            
-            # 调用提炼模型
-            response = await refine_client.chat_completion(
-                prompt=self.prompts.PROGRESSIVE_LEARNING_GENERATE_UPDATED_PERSONA_PROMPT.format(
-                    current_persona_json=current_persona_json,
-                    style_analysis_json=style_analysis_json
-                ),
-                model_name='gpt-4o'  # 使用默认模型名
-            )
-            
-            if response and response.text():
-                # 清理响应文本，移除markdown标识符
-                clean_response = self._clean_llm_json_response(response.text())
+            # 使用多维度分析器的框架适配器生成人格更新
+            if hasattr(self.multidimensional_analyzer, 'llm_adapter') and self.multidimensional_analyzer.llm_adapter:
+                llm_adapter = self.multidimensional_analyzer.llm_adapter
                 
-                try:
-                    updated_persona = safe_parse_llm_json(clean_response)
-                    logger.info("使用提炼模型成功生成更新后的人格")
-                    return updated_persona
-                except json.JSONDecodeError as e:
-                    logger.error(f"提炼模型返回的JSON格式不正确: {e}, 响应: {clean_response}")
+                if llm_adapter.has_refine_provider():
+                    # 准备输入数据
+                    current_persona_json = json.dumps(current_persona, ensure_ascii=False, indent=2)
+                    style_analysis_json = json.dumps(style_analysis, ensure_ascii=False, indent=2)
+                    
+                    # 调用框架适配器
+                    response = await llm_adapter.refine_chat_completion(
+                        prompt=self.prompts.PROGRESSIVE_LEARNING_GENERATE_UPDATED_PERSONA_PROMPT.format(
+                            current_persona_json=current_persona_json,
+                            style_analysis_json=style_analysis_json
+                        ),
+                        temperature=0.6
+                    )
+                    
+                    if response:
+                        # 清理响应文本，移除markdown标识符
+                        clean_response = self._clean_llm_json_response(response)
+                        
+                        try:
+                            updated_persona = safe_parse_llm_json(clean_response)
+                            logger.info("使用提炼模型成功生成更新后的人格")
+                            return updated_persona
+                        except json.JSONDecodeError as e:
+                            logger.error(f"提炼模型返回的JSON格式不正确: {e}, 响应: {clean_response}")
+                            return await self._generate_updated_persona(group_id, current_persona, style_analysis)
+                else:
+                    logger.warning("提炼模型Provider未配置，使用传统方法生成人格")
                     return await self._generate_updated_persona(group_id, current_persona, style_analysis)
-            
-            return await self._generate_updated_persona(group_id, current_persona, style_analysis)
+            else:
+                logger.warning("框架适配器未找到，使用传统方法生成人格")
+                return await self._generate_updated_persona(group_id, current_persona, style_analysis)
             
         except Exception as e:
             logger.error(f"使用提炼模型生成人格失败: {e}")

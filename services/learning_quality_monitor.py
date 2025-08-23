@@ -12,7 +12,6 @@ from astrbot.api import logger
 from astrbot.api.star import Context
 
 from ..core.framework_llm_adapter import FrameworkLLMAdapter  # 导入框架适配器
-from ..core.llm_client import LLMClient  # 保持向后兼容
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
 from ..utils.json_utils import safe_parse_llm_json
@@ -44,16 +43,13 @@ class LearningQualityMonitor:
     
     def __init__(self, config: PluginConfig, context: Context, 
                  llm_adapter: Optional[FrameworkLLMAdapter] = None,
-                 # 保持向后兼容
-                 llm_client: Optional[LLMClient] = None,
                  prompts: Any = None):
         self.config = config
         self.context = context
         self.prompts = prompts
         
-        # 优先使用框架适配器，如果没有则使用旧的LLM客户端（向后兼容）
+        # 使用框架适配器
         self.llm_adapter = llm_adapter
-        self._llm_client = llm_client
         
         # 监控阈值
         self.consistency_threshold = 0.7    # 一致性阈值
@@ -154,34 +150,6 @@ class LearningQualityMonitor:
                 except Exception as e:
                     logger.error(f"框架适配器计算人格一致性失败: {e}")
                     return 0.5
-            
-            # 向后兼容：使用旧的LLM客户端
-            elif self._llm_client:
-                try:
-                    prompt = self.prompts.LEARNING_QUALITY_MONITOR_CONSISTENCY_PROMPT.format(
-                        original_persona_prompt=original_prompt,
-                        updated_persona_prompt=updated_prompt
-                    )
-                    
-                    response = await self._llm_client.chat_completion(prompt=prompt)
-                    
-                    if response and response.text():
-                        try:
-                            # 解析LLM返回的一致性得分
-                            consistency_text = response.text().strip()
-                            # 提取数值
-                            import re
-                            numbers = re.findall(r'0\.\d+|1\.0|0', consistency_text)
-                            if numbers:
-                                consistency_score = min(float(numbers[0]), 1.0)
-                                logger.debug(f"人格一致性得分: {consistency_score}")
-                                return consistency_score
-                        except (ValueError, IndexError) as e:
-                            logger.warning(f"解析一致性得分失败: {e}")
-                    return 0.5  # 默认分数
-                except Exception as e:
-                    logger.error(f"LLM客户端计算人格一致性失败: {e}")
-                    return 0.5
             else:
                 logger.warning("没有可用的LLM服务")
                 return 0.5
@@ -246,8 +214,8 @@ class LearningQualityMonitor:
 
     async def _calculate_emotional_balance(self, messages: List[Dict[str, Any]]) -> float:
         """使用LLM计算情感平衡性"""
-        if not self._llm_client:
-            logger.warning("LLM客户端未初始化，无法使用LLM计算情感平衡性，使用简化算法。")
+        # LLMClient已弃用，仅使用框架适配器 
+        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
             return self._simple_emotional_balance(messages)
 
         messages_text = "\n".join([msg['message'] for msg in messages])
@@ -259,9 +227,7 @@ class LearningQualityMonitor:
             # 优先使用框架适配器
             if self.llm_adapter and self.llm_adapter.has_refine_provider():
                 response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-            # 向后兼容：使用旧的LLM客户端
-            elif self._llm_client:
-                response = await self._llm_client.chat_completion(prompt=prompt)
+            # LLMClient已弃用，不再检查
             else:
                 logger.warning("没有可用的LLM服务")
                 return self._simple_emotional_balance(messages)

@@ -36,8 +36,6 @@ class ServiceFactory(IServiceFactory):
         
         # 框架适配器
         self._framework_llm_adapter: Optional[FrameworkLLMAdapter] = None
-    
-    # LLMClient已弃用，使用FrameworkLLMAdapter代替
 
     def create_framework_llm_adapter(self) -> FrameworkLLMAdapter:
         """创建或获取框架LLM适配器"""
@@ -187,15 +185,15 @@ class ServiceFactory(IServiceFactory):
             # 需要数据库管理器
             db_manager = self.create_database_manager()
             
-            # 通过工厂方法创建服务，LLMClient已弃用
-            refine_llm_client = None # LLMClient已弃用
-            reinforce_llm_client = None # LLMClient已弃用
+            # 获取临时人格更新器实例
+            temporary_persona_updater = self.create_temporary_persona_updater()
 
             service = LightweightMLAnalyzer(
                 self.config, 
                 db_manager, 
                 llm_adapter=self.create_framework_llm_adapter(),  # 使用框架适配器
-                prompts=self.get_prompts() # 传递 prompts
+                prompts=self.get_prompts(), # 传递 prompts
+                temporary_persona_updater=temporary_persona_updater # 传递临时人格更新器
             )
             self._service_cache[cache_key] = service
             
@@ -272,15 +270,19 @@ class ServiceFactory(IServiceFactory):
             
             db_manager = self.create_database_manager() # 获取 DatabaseManager 实例
             
-            # 使用框架LLM适配器替代自定义LLMClient
+            # 使用框架LLM适配器
             llm_adapter = self.create_framework_llm_adapter()
+            
+            # 获取临时人格更新器实例
+            temporary_persona_updater = self.create_temporary_persona_updater()
 
             service = MultidimensionalAnalyzer(
                 self.config, 
                 db_manager, 
                 self.context,
                 llm_adapter=llm_adapter,  # 传递框架适配器
-                prompts=self.get_prompts() # 传递 prompts
+                prompts=self.get_prompts(), # 传递 prompts
+                temporary_persona_updater=temporary_persona_updater # 传递临时人格更新器
             )
             self._service_cache[cache_key] = service
             
@@ -359,7 +361,6 @@ class ServiceFactory(IServiceFactory):
             # 获取依赖的服务
             persona_updater = self.create_persona_updater()
             backup_manager = self.create_persona_backup_manager()
-            llm_client = None # LLMClient已弃用
             db_manager = self.create_database_manager()
             
             service = TemporaryPersonaUpdater(
@@ -367,8 +368,7 @@ class ServiceFactory(IServiceFactory):
                 self.context,
                 persona_updater,
                 backup_manager,
-                db_manager,
-                llm_client  # 现在是可选参数
+                db_manager
             )
             self._service_cache[cache_key] = service
             self._registry.register_service("temporary_persona_updater", service)
@@ -394,7 +394,7 @@ class ServiceFactory(IServiceFactory):
                 self.config, 
                 self.context, 
                 backup_manager, 
-                None,  # LLMClient已弃用
+                None,  # llm_client参数保持为可选
                 self.create_database_manager()  # 传递正确的db_manager
             )
             self._service_cache[cache_key] = service
@@ -420,6 +420,7 @@ class ServiceFactory(IServiceFactory):
         try:
             # 按依赖顺序创建服务
             self.create_database_manager()
+            self.create_temporary_persona_updater()  # 临时人格更新器需要优先创建
             self.create_message_collector()
             self.create_style_analyzer()
             self.create_quality_monitor()
@@ -487,10 +488,9 @@ class QQFilter:
 
 
 class MessageFilter:
-    def __init__(self, config: PluginConfig, context: Context, llm_client=None, prompts: Any = None):
+    def __init__(self, config: PluginConfig, context: Context, prompts: Any = None):
         self.config = config
         self.context = context
-        # llm_client已弃用，不再使用
         self.prompts = prompts  # 保存 prompts
         self._logger = logger
     
@@ -514,7 +514,7 @@ class MessageFilter:
                 message=message
             )
             
-            # LLMClient已弃用，返回默认结果
+            # 不再使用LLM进行筛选，返回默认结果
             return False  # 默认认为不适合学习
         except Exception as e:
             self._logger.error(f"LLM 筛选消息失败: {e}", exc_info=True)
@@ -576,11 +576,10 @@ class ComponentFactory:
         """创建QQ号过滤器"""
         return QQFilter(self.config.target_qq_list)
     
-    def create_message_filter(self, context: Context): # 不再直接接收 llm_client
+    def create_message_filter(self, context: Context):
         """创建消息过滤器"""
-        llm_client = None # LLMClient已弃用，不再传递
         prompts = self.service_factory.get_prompts() # 通过 service_factory 获取 prompts
-        return MessageFilter(self.config, context, llm_client, prompts) # 传递 llm_client 和 prompts
+        return MessageFilter(self.config, context, prompts)
     
     def create_learning_scheduler(self, plugin_instance):
         """创建学习调度器"""
@@ -589,9 +588,8 @@ class ComponentFactory:
     def create_persona_updater(self, context: Context, backup_manager):
         """创建人格更新器"""
         from ..services.persona_updater import PersonaUpdater as ActualPersonaUpdater # 导入实际的 PersonaUpdater
-        llm_client = None # LLMClient已弃用，不再传递
         prompts = self.service_factory.get_prompts() # 获取 prompts
-        return ActualPersonaUpdater(self.config, context, backup_manager, llm_client, prompts) # 传递 config, llm_client 和 prompts
+        return ActualPersonaUpdater(self.config, context, backup_manager, None, prompts)
 
     def create_data_analytics_service(self):
         """创建数据分析与可视化服务"""

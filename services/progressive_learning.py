@@ -62,6 +62,9 @@ class ProgressiveLearningService:
         
         # 学习状态 - 使用字典管理每个群组的学习状态
         self.learning_active = {}  # 改为字典，按群组ID管理
+        
+        # 增量更新回调函数，降低耦合性
+        self.update_system_prompt_callback = None
         self.current_session: Optional[LearningSession] = None
         self.learning_sessions: List[LearningSession] = [] # 历史学习会话，可以从数据库加载
         self.learning_lock = asyncio.Lock()  # 添加异步锁防止竞态条件
@@ -72,6 +75,16 @@ class ProgressiveLearningService:
         self.quality_threshold = config.style_update_threshold
         
         logger.info("渐进式学习服务初始化完成")
+    
+    def set_update_system_prompt_callback(self, callback):
+        """
+        设置增量更新回调函数
+        
+        Args:
+            callback: 异步回调函数，接受 group_id 参数
+        """
+        self.update_system_prompt_callback = callback
+        logger.info("增量更新回调函数已设置")
 
     async def start(self):
         """服务启动时加载历史学习会话"""
@@ -293,7 +306,19 @@ class ProgressiveLearningService:
                 # 每次批次结束都保存当前会话状态
                 await self.db_manager.save_learning_session_record(group_id, self.current_session.__dict__)
             
-            # 13. 【新增】定期执行策略优化
+            # 13. 【新增】学习成功后更新增量内容到system_prompt
+            if success:
+                try:
+                    # 使用回调函数进行增量更新，降低耦合性
+                    if self.update_system_prompt_callback:
+                        await self.update_system_prompt_callback(group_id)
+                        logger.info(f"定时更新增量内容完成: {group_id}")
+                    else:
+                        logger.debug("未设置增量更新回调函数，跳过增量内容更新")
+                except Exception as e:
+                    logger.error(f"定时增量内容更新失败: {e}")
+            
+            # 14. 【新增】定期执行策略优化
             if success and self.current_session and self.current_session.messages_processed % 500 == 0:
                 try:
                     await self.ml_analyzer.reinforcement_strategy_optimization(group_id)

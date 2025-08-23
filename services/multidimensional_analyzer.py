@@ -16,7 +16,6 @@ from astrbot.api.event import AstrMessageEvent
 
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError
-from ..core.llm_client import LLMClient # 导入自定义LLMClient（保持向后兼容）
 from ..core.framework_llm_adapter import FrameworkLLMAdapter # 导入框架适配器
 from .database_manager import DatabaseManager # 导入 DatabaseManager
 from ..utils.json_utils import safe_parse_llm_json
@@ -33,6 +32,7 @@ class UserProfile:
     social_connections: List[str] = None
     topic_preferences: Dict[str, float] = None
     emotional_tendency: Dict[str, float] = None
+    last_active: float = None  # 添加缺失的字段
     
     def __post_init__(self):
         if self.nicknames is None:
@@ -47,6 +47,8 @@ class UserProfile:
             self.topic_preferences = {}
         if self.emotional_tendency is None:
             self.emotional_tendency = {}
+        if self.last_active is None:
+            self.last_active = time.time()
 
 
 @dataclass
@@ -75,11 +77,12 @@ class MultidimensionalAnalyzer:
     
     def __init__(self, config: PluginConfig, db_manager: DatabaseManager, context=None,
                  llm_adapter: Optional[FrameworkLLMAdapter] = None,
-                 prompts: Any = None): # 添加 prompts 参数
+                 prompts: Any = None, temporary_persona_updater = None): # 添加 prompts 参数和临时人格更新器
         self.config = config
         self.context = context
         self.db_manager: DatabaseManager = db_manager # 直接传入 DatabaseManager 实例
         self.prompts = prompts # 保存 prompts
+        self.temporary_persona_updater = temporary_persona_updater # 保存临时人格更新器引用
 
         # 使用框架适配器
         self.llm_adapter = llm_adapter
@@ -320,7 +323,7 @@ class MultidimensionalAnalyzer:
 
         # 优先使用框架适配器
         if self.llm_adapter and self.llm_adapter.has_refine_provider():
-            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EVALUATE_MESSAGE_QUALITY_PROMPT.format(
+            prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_EVALUATE_MESSAGE_QUALITY_PROMPT.format(
                 current_persona_description=current_persona_description,
                 message_text=message_text
             )
@@ -346,6 +349,119 @@ class MultidimensionalAnalyzer:
             logger.warning("提炼模型未配置，返回默认评分。")
             return default_scores
 
+    def _debug_dict_keys(self, data: Dict, context_name: str = "") -> Dict:
+        """调试字典键，确保没有tuple键"""
+        try:
+            import json
+            from collections import Counter
+            
+            # 递归清理数据结构
+            def clean_data(obj):
+                if isinstance(obj, Counter):
+                    # Counter转换为普通字典
+                    return dict(obj)
+                elif isinstance(obj, dict):
+                    # 清理字典的键和值
+                    cleaned = {}
+                    for key, value in obj.items():
+                        # 确保键是可序列化的基本类型
+                        if isinstance(key, (tuple, list, set)):
+                            clean_key = str(key)
+                        elif key is None:
+                            clean_key = "null"
+                        else:
+                            clean_key = key
+                        
+                        cleaned[clean_key] = clean_data(value)
+                    return cleaned
+                elif isinstance(obj, (list, tuple)):
+                    return [clean_data(item) for item in obj]
+                elif hasattr(obj, '__dict__'):
+                    # 处理自定义对象
+                    return clean_data(obj.__dict__)
+                else:
+                    return obj
+            
+            cleaned_data = clean_data(data)
+            
+            # 尝试序列化以确认没有问题
+            json.dumps(cleaned_data)
+            return cleaned_data
+            
+        except TypeError as e:
+            logger.error(f"JSON序列化错误在 {context_name}: {e}")
+            logger.error(f"问题数据类型: {type(data)}")
+            # 返回空字典避免崩溃
+            return {}
+
+    def _clean_user_profiles(self):
+        """清理user_profiles中的问题数据"""
+        try:
+            from collections import Counter
+            
+            profiles_to_fix = []
+            for user_key, profile in self.user_profiles.items():
+                if isinstance(profile, dict):
+                    # 检查并修复activity_pattern中的Counter
+                    if 'activity_pattern' in profile and isinstance(profile['activity_pattern'], dict):
+                        activity_pattern = profile['activity_pattern']
+                        if 'activity_hours' in activity_pattern and isinstance(activity_pattern['activity_hours'], Counter):
+                            profiles_to_fix.append((user_key, 'activity_hours'))
+            
+            # 修复发现的问题
+            for user_key, issue_type in profiles_to_fix:
+                if issue_type == 'activity_hours':
+                    counter_obj = self.user_profiles[user_key]['activity_pattern']['activity_hours']
+                    self.user_profiles[user_key]['activity_pattern']['activity_hours'] = dict(counter_obj)
+                    logger.debug(f"修复了用户 {user_key} 的Counter对象")
+                    
+        except Exception as e:
+            logger.error(f"清理user_profiles失败: {e}")
+
+    def _clean_profile_for_serialization(self, profile_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """清理用户档案数据，确保可以安全进行JSON序列化"""
+        try:
+            from collections import Counter
+            
+            def clean_data_recursive(obj):
+                if isinstance(obj, Counter):
+                    # Counter转换为普通字典，确保键是基本类型
+                    return {str(k) if isinstance(k, (tuple, list, set)) else k: v for k, v in obj.items()}
+                elif isinstance(obj, dict):
+                    cleaned = {}
+                    for key, value in obj.items():
+                        # 确保键是可序列化的
+                        clean_key = str(key) if isinstance(key, (tuple, list, set)) else key
+                        if clean_key is None:
+                            clean_key = "null"
+                        cleaned[clean_key] = clean_data_recursive(value)
+                    return cleaned
+                elif isinstance(obj, (list, tuple)):
+                    return [clean_data_recursive(item) for item in obj]
+                else:
+                    return obj
+            
+            cleaned_profile = clean_data_recursive(profile_dict)
+            
+            # 尝试JSON序列化测试
+            import json
+            json.dumps(cleaned_profile)
+            
+            return cleaned_profile
+            
+        except Exception as e:
+            logger.error(f"清理用户档案数据失败: {e}")
+            # 返回基础的空档案，确保不会崩溃
+            return {
+                'qq_id': profile_dict.get('qq_id', ''),
+                'qq_name': profile_dict.get('qq_name', ''),
+                'nicknames': [],
+                'activity_pattern': {},
+                'communication_style': {},
+                'topic_preferences': {},
+                'emotional_tendency': {}
+            }
+
     async def analyze_message_context(self, event: AstrMessageEvent, message_text: str) -> Dict[str, Any]:
         """分析消息的多维度上下文"""
         try:
@@ -357,6 +473,9 @@ class MultidimensionalAnalyzer:
             sender_id = event.get_sender_id()
             sender_name = event.get_sender_name()
             group_id = event.get_group_id()
+            
+            # 预先清理user_profiles中的任何问题数据
+            self._clean_user_profiles()
             
             # 更新用户画像
             await self._update_user_profile(group_id, sender_id, sender_name, message_text, event) # 传入 group_id
@@ -376,17 +495,68 @@ class MultidimensionalAnalyzer:
             # 分析沟通风格
             style_context = await self._analyze_communication_style(message_text)
             
-            return {
-                'user_profile': self.user_profiles.get(sender_id, {}).activity_pattern if sender_id in self.user_profiles else {},
-                'social_context': social_context,
-                'topic_context': topic_context,
-                'emotional_context': emotional_context,
-                'temporal_context': temporal_context,
-                'style_context': style_context,
+            # 构建分析结果，使用简化的清理方法
+            user_profile_data = self._get_user_profile_activity(group_id, sender_id)
+            
+            analysis_result = {
+                'user_profile': user_profile_data,
+                'social_context': social_context or {},
+                'topic_context': topic_context or {},
+                'emotional_context': emotional_context or {},
+                'temporal_context': temporal_context or {},
+                'style_context': style_context or {},
                 'contextual_relevance': await self._calculate_contextual_relevance(
                     sender_id, message_text, event
                 )
             }
+            
+            # 使用清理方法确保没有序列化问题
+            analysis_result = self._debug_dict_keys(analysis_result, 'final_analysis_result')
+            
+            # 尝试将分析结果集成到system_prompt
+            if self.temporary_persona_updater:
+                try:
+                    # 准备多维度更新数据
+                    update_data = {}
+                    
+                    # 用户档案更新
+                    user_key = f"{group_id}:{sender_id}"
+                    if user_key in self.user_profiles:
+                        profile = self.user_profiles[user_key]
+                        update_data['user_profile'] = {
+                            'preferences': self._safe_get_profile_attr(profile, 'activity_pattern', {}).get('frequency', '正常'),
+                            'communication_style': style_context.get('style_summary', ''),
+                            'personality_traits': f"情感倾向{emotional_context.get('sentiment', '中性')}"
+                        }
+                    
+                    # 社交关系更新
+                    if social_context:
+                        update_data['social_relationship'] = {
+                            'user_relationships': social_context.get('relationship_level', ''),
+                            'group_atmosphere': social_context.get('group_dynamics', ''),
+                            'interaction_style': social_context.get('interaction_pattern', '')
+                        }
+                    
+                    # 上下文感知更新
+                    if topic_context:
+                        update_data['context_awareness'] = {
+                            'current_topic': topic_context.get('main_topics', [''])[0] if topic_context.get('main_topics') else '',
+                            'recent_focus': topic_context.get('topic_shift', ''),
+                            'dialogue_flow': f"话题相关度: {topic_context.get('relevance_score', 0)}"
+                        }
+                    
+                    # 应用综合更新到system_prompt
+                    if update_data:
+                        await self.temporary_persona_updater.apply_comprehensive_update_to_system_prompt(
+                            group_id, update_data
+                        )
+                        logger.info(f"成功将多维度分析结果集成到system_prompt: {group_id}")
+                    
+                except Exception as e:
+                    logger.error(f"集成分析结果到system_prompt失败: {e}")
+                    # 这里不抛出异常，让分析结果正常返回
+            
+            return analysis_result
             
         except Exception as e:
             logger.error(f"多维度上下文分析失败: {e}")
@@ -460,28 +630,54 @@ class MultidimensionalAnalyzer:
             current_time = timestamp or time.time()
             
             if user_key not in self.user_profiles:
-                self.user_profiles[user_key] = {
-                    'user_id': sender_id,
-                    'name': sender_name,
-                    'group_id': group_id,
-                    'message_count': 0,
-                    'topics': [],
-                    'communication_style': {},
-                    'last_activity': current_time,
-                    'created_at': current_time
-                }
-            
-            profile = self.user_profiles[user_key]
-            profile['message_count'] += 1
-            profile['last_activity'] = current_time
+                # 创建UserProfile对象而不是字典
+                profile = UserProfile(qq_id=sender_id, qq_name=sender_name)
+                self.user_profiles[user_key] = profile
+            else:
+                profile = self.user_profiles[user_key]
+                
+            # 更新基本信息 - 使用属性访问而不是字典访问
+            if hasattr(profile, 'message_count'):
+                if isinstance(profile.communication_style, dict) and 'message_count' in profile.communication_style:
+                    profile.communication_style['message_count'] += 1
+                else:
+                    profile.communication_style['message_count'] = 1
             
             # 更新沟通风格
             style = await self._analyze_communication_style(message_text)
             if style:
-                profile['communication_style'].update(style)
+                if not isinstance(profile.communication_style, dict):
+                    profile.communication_style = {}
+                profile.communication_style.update(style)
                 
         except Exception as e:
             logger.error(f"批量更新用户画像失败: {e}")
+
+    def _safe_get_profile_attr(self, profile, attr_name: str, default=None):
+        """安全获取profile属性，兼容UserProfile对象和dict"""
+        try:
+            if isinstance(profile, dict):
+                return profile.get(attr_name, default)
+            else:
+                return getattr(profile, attr_name, default)
+        except Exception:
+            return default
+
+    def _get_user_profile_activity(self, group_id: str, sender_id: str) -> Dict[str, Any]:
+        """安全获取用户档案活动模式"""
+        try:
+            user_key = f"{group_id}:{sender_id}"
+            if user_key in self.user_profiles:
+                profile = self.user_profiles[user_key]
+                if isinstance(profile, dict):
+                    return profile.get('activity_pattern', {})
+                else:
+                    # UserProfile对象
+                    return getattr(profile, 'activity_pattern', {})
+            return {}
+        except Exception as e:
+            logger.error(f"获取用户档案活动模式失败: {e}")
+            return {}
 
     async def _calculate_enhanced_relevance(self, message_text: str, sender_id: str = '', 
                                           group_id: str = '', timestamp: float = None) -> float:
@@ -497,7 +693,8 @@ class MultidimensionalAnalyzer:
                 if user_key in self.user_profiles:
                     user_profile = self.user_profiles[user_key]
                     # 活跃用户的消息获得更高权重
-                    if user_profile.get('message_count', 0) > 10:
+                    message_count = user_profile.get('message_count', 0) if isinstance(user_profile, dict) else getattr(user_profile, 'message_count', 0)
+                    if message_count > 10:
                         user_bonus = 0.1
                     
             return min(1.0, base_relevance + user_bonus)
@@ -512,10 +709,12 @@ class MultidimensionalAnalyzer:
             user_key = f"{group_id}:{sender_id}"
             if user_key in self.user_profiles:
                 profile = self.user_profiles[user_key]
+                message_count = self._safe_get_profile_attr(profile, 'message_count', 0)
+                last_activity = self._safe_get_profile_attr(profile, 'last_activity', 0)
                 return {
-                    'message_count': profile.get('message_count', 0),
-                    'activity_level': 'high' if profile.get('message_count', 0) > 50 else 'low',
-                    'last_activity': profile.get('last_activity', 0)
+                    'message_count': message_count,
+                    'activity_level': 'high' if message_count > 50 else 'low',
+                    'last_activity': last_activity
                 }
             return {}
             
@@ -578,48 +777,63 @@ class MultidimensionalAnalyzer:
 
     async def _update_user_profile(self, group_id: str, qq_id: str, qq_name: str, message_text: str, event: AstrMessageEvent):
         """更新用户画像并持久化"""
-        profile_data = await self.db_manager.load_user_profile(group_id, qq_id)
-        if profile_data:
-            profile = UserProfile(**profile_data)
-        else:
-            profile = UserProfile(qq_id=qq_id, qq_name=qq_name)
-        
-        # 更新活动模式
-        current_hour = datetime.now().hour
-        if 'activity_hours' not in profile.activity_pattern:
-            profile.activity_pattern['activity_hours'] = Counter()
-        profile.activity_pattern['activity_hours'][current_hour] += 1
-        
-        # 更新消息长度偏好
-        msg_length = len(message_text)
-        if 'message_lengths' not in profile.activity_pattern:
-            profile.activity_pattern['message_lengths'] = []
-        profile.activity_pattern['message_lengths'].append(msg_length)
-        
-        # 保持最近100条消息的长度记录
-        if len(profile.activity_pattern['message_lengths']) > 100:
-            profile.activity_pattern['message_lengths'] = profile.activity_pattern['message_lengths'][-100:]
-        
-        # 更新话题偏好
-        topics = await self._extract_topics(message_text)
-        for topic in topics:
-            if topic not in profile.topic_preferences:
-                profile.topic_preferences[topic] = 0
-            profile.topic_preferences[topic] += 1
-        
-        # 更新沟通风格
-        style_features = await self._extract_style_features(message_text)
-        for feature, value in style_features.items():
-            if feature not in profile.communication_style:
-                profile.communication_style[feature] = []
-            profile.communication_style[feature].append(value)
+        try:
+            profile_data = await self.db_manager.load_user_profile(group_id, qq_id)
+            if profile_data:
+                profile = UserProfile(**profile_data)
+            else:
+                profile = UserProfile(qq_id=qq_id, qq_name=qq_name)
             
-            # 保持最近50个特征值
-            if len(profile.communication_style[feature]) > 50:
-                profile.communication_style[feature] = profile.communication_style[feature][-50:]
-        
-        self.user_profiles[qq_id] = profile # 更新内存中的画像
-        await self.db_manager.save_user_profile(group_id, asdict(profile)) # 持久化到数据库
+            # 更新活动模式
+            current_hour = datetime.now().hour
+            if 'activity_hours' not in profile.activity_pattern:
+                profile.activity_pattern['activity_hours'] = Counter()
+            elif not isinstance(profile.activity_pattern['activity_hours'], Counter):
+                # 如果从数据库加载的是普通字典，转换为Counter
+                profile.activity_pattern['activity_hours'] = Counter(profile.activity_pattern['activity_hours'])
+            
+            profile.activity_pattern['activity_hours'][current_hour] += 1
+            
+            # 更新消息长度偏好
+            msg_length = len(message_text)
+            if 'message_lengths' not in profile.activity_pattern:
+                profile.activity_pattern['message_lengths'] = []
+            profile.activity_pattern['message_lengths'].append(msg_length)
+            
+            # 保持最近100条消息的长度记录
+            if len(profile.activity_pattern['message_lengths']) > 100:
+                profile.activity_pattern['message_lengths'] = profile.activity_pattern['message_lengths'][-100:]
+            
+            # 更新话题偏好
+            topics = await self._extract_topics(message_text)
+            for topic in topics:
+                if topic not in profile.topic_preferences:
+                    profile.topic_preferences[topic] = 0
+                profile.topic_preferences[topic] += 1
+            
+            # 更新沟通风格
+            style_features = await self._extract_style_features(message_text)
+            for feature, value in style_features.items():
+                if feature not in profile.communication_style:
+                    profile.communication_style[feature] = []
+                profile.communication_style[feature].append(value)
+                
+                # 保持最近50个特征值
+                if len(profile.communication_style[feature]) > 50:
+                    profile.communication_style[feature] = profile.communication_style[feature][-50:]
+            
+            # 使用一致的用户键格式
+            user_key = f"{group_id}:{qq_id}"
+            self.user_profiles[user_key] = profile # 更新内存中的画像
+            
+            # 清理profile数据以确保JSON序列化安全
+            profile_dict = asdict(profile)
+            profile_dict = self._clean_profile_for_serialization(profile_dict)
+            await self.db_manager.save_user_profile(group_id, profile_dict) # 持久化到数据库
+            
+        except Exception as e:
+            logger.error(f"更新用户画像失败 (群:{group_id}, 用户:{qq_id}): {e}", exc_info=True)
+            raise
 
     async def _analyze_social_context(self, event: AstrMessageEvent, message_text: str) -> Dict[str, Any]:
         """分析社交关系上下文"""
@@ -688,7 +902,7 @@ class MultidimensionalAnalyzer:
         """使用LLM分析情感上下文"""
         # 优先使用框架适配器
         if self.llm_adapter and self.llm_adapter.has_refine_provider():
-            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
+            prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
                 message_text=message_text
             )
             try:
@@ -720,7 +934,7 @@ class MultidimensionalAnalyzer:
         
         # 使用框架适配器进行情感上下文分析
         elif self.llm_adapter and self.llm_adapter.has_refine_provider():
-            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
+            prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
                 message_text=message_text
             )
             try:
@@ -797,16 +1011,19 @@ class MultidimensionalAnalyzer:
 
     async def _analyze_communication_style(self, message_text: str) -> Dict[str, float]:
         """分析沟通风格"""
-        style_features = {
-            'formal_level': self._calculate_formal_level(message_text),
-            'enthusiasm_level': self._calculate_enthusiasm_level(message_text),
-            'question_tendency': self._calculate_question_tendency(message_text),
-            'emoji_usage': self._calculate_emoji_usage(message_text),
-            'length_preference': len(message_text),
-            'punctuation_style': self._calculate_punctuation_style(message_text)
-        }
-        
-        return style_features
+        try:
+            style_features = {
+                'formal_level': await self._calculate_formal_level(message_text),
+                'enthusiasm_level': await self._calculate_enthusiasm_level(message_text),
+                'question_tendency': await self._calculate_question_tendency(message_text),
+                'emoji_usage': self._calculate_emoji_usage(message_text),
+                'length_preference': len(message_text),
+                'punctuation_style': self._calculate_punctuation_style(message_text)
+            }
+            return style_features
+        except Exception as e:
+            logger.error(f'分析沟通风格失败：{e}')
+            return {}
 
     async def _extract_topics(self, message_text: str) -> List[str]:
         """提取消息话题"""
@@ -879,14 +1096,17 @@ class MultidimensionalAnalyzer:
             self.social_graph[from_user].append(new_relation)
         
         # 持久化社交关系
-        await self.db_manager.save_social_relation(group_id, asdict(existing_relation if existing_relation else new_relation))
+        relation_data = asdict(existing_relation if existing_relation else new_relation)
+        relation_data = self._debug_dict_keys(relation_data, 'social_relation')
+        await self.db_manager.save_social_relation(group_id, relation_data)
 
     async def _analyze_group_role(self, user_id: str, group_id: str) -> str:
         """分析用户在群内的角色"""
         # 这里可以基于发言频率、被@次数等判断用户角色
         # 简化实现
-        if user_id in self.user_profiles:
-            profile = self.user_profiles[user_id]
+        user_key = f"{group_id}:{user_id}"
+        if user_key in self.user_profiles:
+            profile = self.user_profiles[user_key]
             mention_count = sum(1 for relations in self.social_graph.values() 
                               for relation in relations 
                               if relation.to_user == user_id and relation.relation_type == 'mention')
@@ -902,37 +1122,54 @@ class MultidimensionalAnalyzer:
 
     async def _calculate_contextual_relevance(self, sender_id: str, message_text: str, event: AstrMessageEvent) -> float:
         """计算上下文相关性得分"""
-        relevance_score = 0.0
-        
-        # 基于用户历史行为的相关性
-        if sender_id in self.user_profiles:
-            profile = self.user_profiles[sender_id]
+
+        try:
+
+            relevance_score = 0.0
+            group_id = event.get_group_id() if event else ''
             
-            # 话题一致性
-            current_topics = await self._extract_topics(message_text)
-            for topic in current_topics:
-                if topic in profile.topic_preferences:
-                    relevance_score += 0.2
+            # 基于用户历史行为的相关性
+            user_key = f"{group_id}:{sender_id}"
+            if user_key in self.user_profiles:
+                profile = self.user_profiles[user_key]
+                
+                # 兼容处理UserProfile对象和dict
+                if hasattr(profile, 'topic_preferences'):
+                    topic_preferences = profile.topic_preferences
+                else:
+                    topic_preferences = profile.get('topic_preferences', {})
+                
+                # 话题一致性
+                current_topics = await self._extract_topics(message_text)
+                for topic in current_topics:
+                    if topic in topic_preferences:
+                        relevance_score += 0.2
+                
+                # 风格一致性
+                current_style = await self._extract_style_features(message_text)
+                communication_style = profile.communication_style if hasattr(profile, 'communication_style') else profile.get('communication_style', {})
+                
+                if 'length' in communication_style:
+                    avg_length = sum(communication_style['length'][-10:]) / min(10, len(communication_style['length']))
+                    length_similarity = 1.0 - abs(current_style['length'] - avg_length) / max(avg_length, 1)
+                    relevance_score += length_similarity * 0.1
             
-            # 风格一致性
-            current_style = await self._extract_style_features(message_text)
-            if 'length' in profile.communication_style:
-                avg_length = sum(profile.communication_style['length'][-10:]) / min(10, len(profile.communication_style['length']))
-                length_similarity = 1.0 - abs(current_style['length'] - avg_length) / max(avg_length, 1)
-                relevance_score += length_similarity * 0.1
-        
-            # 时间上下文相关性
-            current_hour = datetime.now().hour
-            if sender_id in self.user_profiles:
-                profile = self.user_profiles[sender_id]
-                if 'activity_hours' in profile.activity_pattern:
-                    hour_frequency = profile.activity_pattern['activity_hours'].get(current_hour, 0)
-                    total_messages = sum(profile.activity_pattern['activity_hours'].values())
-                    if total_messages > 0:
-                        time_relevance = hour_frequency / total_messages
-                        relevance_score += time_relevance * 0.2
-        
-        return min(relevance_score, 1.0)
+                # 时间上下文相关性
+                current_hour = datetime.now().hour
+                if user_key in self.user_profiles:
+                    profile = self.user_profiles[user_key]
+                    activity_pattern = profile.activity_pattern if hasattr(profile, 'activity_pattern') else profile.get('activity_pattern', {})
+                    if 'activity_hours' in activity_pattern:
+                        hour_frequency = activity_pattern['activity_hours'].get(current_hour, 0)
+                        total_messages = sum(activity_pattern['activity_hours'].values())
+                        if total_messages > 0:
+                            time_relevance = hour_frequency / total_messages
+                            relevance_score += time_relevance * 0.2
+            
+            return min(relevance_score, 1.0)
+        except Exception as e:
+            logger.warning(f"计算上下文相关性得分-计算失败: {e}")
+            return None
 
     def _get_time_period(self, hour: int) -> str:
         """获取时间段"""
@@ -967,26 +1204,21 @@ class MultidimensionalAnalyzer:
         Returns:
             0-1之间的评分。
         """
-        if not (hasattr(self.config, 'refine_api_url') and hasattr(self.config, 'refine_api_key')):
+        # 检查适配器和refine provider是否可用
+        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
             logger.warning(f"提炼模型LLM客户端未初始化，无法使用LLM计算{analysis_name}，使用简化算法。")
-            return fallback_function(text)
-            
-        if not (self.config.refine_api_url and self.config.refine_api_key):
-            logger.warning(f"提炼模型LLM客户端配置不完整，无法使用LLM计算{analysis_name}，使用简化算法。")
             return fallback_function(text)
 
         try:
             prompt = prompt_template.format(text=text)
-            if self.llm_adapter and self.llm_adapter.has_refine_provider():
-                response = await self.llm_adapter.refine_chat_completion(
-                    prompt=prompt,
-                    temperature=0.1
-                )
-            else:
-                response = None
+            response = await self.llm_adapter.refine_chat_completion(
+                prompt=prompt,
+                temperature=0.1
+            )
             
-            if response and response.text():
-                numbers = re.findall(r'0\.\d+|1\.0|0', response.text().strip())
+            if response:
+                # response 是字符串
+                numbers = re.findall(r'0\.\d+|1\.0|0', response.strip())
                 if numbers:
                     return min(float(numbers[0]), 1.0)
             
@@ -1044,22 +1276,25 @@ class MultidimensionalAnalyzer:
         punctuation_count = len([c for c in text if c in '，。！？；：""''()（）'])
         return punctuation_count / max(len(text), 1)
 
-    async def get_user_insights(self, qq_id: str) -> Dict[str, Any]:
+    async def get_user_insights(self, group_id: str, qq_id: str) -> Dict[str, Any]:
         """使用LLM生成深度用户洞察"""
-        if qq_id not in self.user_profiles:
+        user_key = f"{group_id}:{qq_id}"
+        if user_key not in self.user_profiles:
             return {"error": "用户不存在"}
         
-        profile = self.user_profiles[qq_id]
+        profile = self.user_profiles[user_key]
         
         # 计算活跃时段
         active_hours = []
-        if 'activity_hours' in profile.activity_pattern:
-            sorted_hours = sorted(profile.activity_pattern['activity_hours'].items(), 
+        activity_pattern = profile.activity_pattern if hasattr(profile, 'activity_pattern') else profile.get('activity_pattern', {})
+        if 'activity_hours' in activity_pattern:
+            sorted_hours = sorted(activity_pattern['activity_hours'].items(), 
                                 key=lambda x: x[1], reverse=True) # 修正排序键
             active_hours = [hour for hour, count in sorted_hours[:3]]
         
         # 计算主要话题
-        main_topics = sorted(profile.topic_preferences.items(), 
+        topic_preferences = profile.topic_preferences if hasattr(profile, 'topic_preferences') else profile.get('topic_preferences', {})
+        main_topics = sorted(topic_preferences.items(), 
                            key=lambda x: x[1], reverse=True)[:3] # 修正排序键
         
         # 计算社交活跃度
@@ -1070,8 +1305,8 @@ class MultidimensionalAnalyzer:
         
         return {
             'user_id': qq_id,
-            'user_name': profile.qq_name,
-            'nicknames': profile.nicknames,
+            'user_name': profile.qq_name if hasattr(profile, 'qq_name') else profile.get('name', f'用户{qq_id}'),
+            'nicknames': profile.nicknames if hasattr(profile, 'nicknames') else profile.get('nicknames', []),
             'active_hours': active_hours,
             'main_topics': [topic for topic, count in main_topics],
             'social_activity': social_activity,
@@ -1082,34 +1317,45 @@ class MultidimensionalAnalyzer:
             'social_behavior': await self._analyze_social_behavior(qq_id)
         }
 
-    async def _generate_deep_insights(self, profile: UserProfile) -> Dict[str, Any]:
+    async def _generate_deep_insights(self, profile) -> Dict[str, Any]:
         """使用LLM生成深度用户洞察"""
-        if not (hasattr(self.config, 'refine_api_url') and hasattr(self.config, 'refine_api_key')):
+        # 检查适配器和refine provider是否可用
+        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
             logger.warning("提炼模型LLM客户端未初始化，无法使用LLM生成深度用户洞察。")
-            return {"error": "LLM服务不可用"}
-            
-        if not (self.config.refine_api_url and self.config.refine_api_key):
-            logger.warning("提炼模型LLM客户端配置不完整，无法使用LLM生成深度用户洞察。")
             return {"error": "LLM服务不可用"}
 
         try:
+            # 兼容处理UserProfile对象和dict
+            def get_attr(obj, attr, default=None):
+                if hasattr(obj, attr):
+                    return getattr(obj, attr)
+                elif isinstance(obj, dict):
+                    return obj.get(attr, default)
+                return default
+                
             # 准备用户数据摘要
+            qq_name = get_attr(profile, 'qq_name', get_attr(profile, 'name', '未知用户'))
+            nicknames = get_attr(profile, 'nicknames', [])
+            topic_preferences = get_attr(profile, 'topic_preferences', {})
+            activity_pattern = get_attr(profile, 'activity_pattern', {})
+            social_connections = get_attr(profile, 'social_connections', [])
+            
             user_data_summary = {
-                'qq_name': profile.qq_name,
-                'nicknames': profile.nicknames,
-                'topic_preferences': dict(list(profile.topic_preferences.items())[:5]),
+                'qq_name': qq_name,
+                'nicknames': nicknames,
+                'topic_preferences': dict(list(topic_preferences.items())[:5]) if topic_preferences else {},
                 'activity_pattern': {
                     'peak_hours': [k for k, v in sorted(
-                        profile.activity_pattern.get('activity_hours', {}).items(),
+                        activity_pattern.get('activity_hours', {}).items(),
                         key=lambda item: item[1], reverse=True
                     )[:3]],
-                    'avg_message_length': sum(profile.activity_pattern.get('message_lengths', [])) / 
-                                        max(len(profile.activity_pattern.get('message_lengths', [])), 1)
+                    'avg_message_length': sum(activity_pattern.get('message_lengths', [])) / 
+                                        max(len(activity_pattern.get('message_lengths', [])), 1)
                 },
-                'social_connections': len(profile.social_connections)
+                'social_connections': len(social_connections)
             }
             
-            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_DEEP_INSIGHTS_PROMPT.format(
+            prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_DEEP_INSIGHTS_PROMPT.format(
                 user_data_summary=json.dumps(user_data_summary, ensure_ascii=False, indent=2)
             )
             
@@ -1121,12 +1367,13 @@ class MultidimensionalAnalyzer:
             else:
                 response = None
             
-            if response and response.text():
+            if response:
+                # response 是字符串
                 try:
-                    insights = safe_parse_llm_json(response.text())
+                    insights = safe_parse_llm_json(response.strip())
                     return insights
                 except json.JSONDecodeError:
-                    logger.warning(f"LLM响应JSON解析失败，返回简化分析。响应内容: {response.text()}")
+                    logger.warning(f"LLM响应JSON解析失败，返回简化分析。响应内容: {response.strip()}")
                     return {
                         "personality_type": "分析中",
                         "communication_preference": "待深入分析",
@@ -1139,24 +1386,24 @@ class MultidimensionalAnalyzer:
             logger.warning(f"深度洞察生成失败: {e}")
             return {"error": "洞察生成失败"}
 
-    async def _analyze_personality_traits(self, profile: UserProfile) -> Dict[str, float]:
+    async def _analyze_personality_traits(self, profile) -> Dict[str, float]:
         """分析用户人格特质"""
-        if not (hasattr(self.config, 'refine_api_url') and hasattr(self.config, 'refine_api_key')):
+        # 检查适配器和refine provider是否可用
+        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
             logger.warning("提炼模型LLM客户端未初始化，无法使用LLM分析人格特质，使用简化算法。")
-            return self._simple_personality_analysis(profile)
-            
-        if not (self.config.refine_api_url and self.config.refine_api_key):
-            logger.warning("提炼模型LLM客户端配置不完整，无法使用LLM分析人格特质，使用简化算法。")
             return self._simple_personality_analysis(profile)
 
         try:
+            # 兼容处理UserProfile对象和dict
+            communication_style = profile.communication_style if hasattr(profile, 'communication_style') else profile.get('communication_style', {})
+            
             # 获取最近的沟通风格数据
             recent_styles = {}
-            for feature, values in profile.communication_style.items():
+            for feature, values in communication_style.items():
                 if values:
                     recent_styles[feature] = sum(values[-10:]) / min(len(values), 10)
             
-            prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_PERSONALITY_TRAITS_PROMPT.format(
+            prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_PERSONALITY_TRAITS_PROMPT.format(
                 communication_style_data=json.dumps(recent_styles, ensure_ascii=False, indent=2)
             )
             
@@ -1168,12 +1415,13 @@ class MultidimensionalAnalyzer:
             else:
                 response = None
             
-            if response and response.text():
+            if response:
+                # response 是字符串
                 try:
-                    traits = safe_parse_llm_json(response.text())
+                    traits = safe_parse_llm_json(response.strip())
                     return traits
                 except json.JSONDecodeError:
-                    logger.warning(f"LLM响应JSON解析失败，返回简化人格分析。响应内容: {response.text()}")
+                    logger.warning(f"LLM响应JSON解析失败，返回简化人格分析。响应内容: {response.strip()}")
                     return self._simple_personality_analysis(profile)
             return self._simple_personality_analysis(profile)
                 
@@ -1181,10 +1429,14 @@ class MultidimensionalAnalyzer:
             logger.warning(f"人格特质分析失败: {e}")
             return self._simple_personality_analysis(profile)
 
-    def _simple_personality_analysis(self, profile: UserProfile) -> Dict[str, float]:
+    def _simple_personality_analysis(self, profile) -> Dict[str, float]:
         """简化的人格分析（备用）"""
+        # 兼容处理UserProfile对象和dict
+        communication_style = profile.communication_style if hasattr(profile, 'communication_style') else profile.get('communication_style', {})
+        topic_preferences = profile.topic_preferences if hasattr(profile, 'topic_preferences') else profile.get('topic_preferences', {})
+        
         # 基于基础数据的简单分析
-        style_data = profile.communication_style
+        style_data = communication_style
         
         # 外向性：基于消息频率和长度
         extraversion = 0.5
@@ -1193,7 +1445,7 @@ class MultidimensionalAnalyzer:
             extraversion = min(avg_length / 100, 1.0)
         
         # 开放性：基于话题多样性
-        openness = len(profile.topic_preferences) / 10 if profile.topic_preferences else 0.5
+        openness = len(topic_preferences) / 10 if topic_preferences else 0.5
         
         return {
             "openness": min(openness, 1.0),
@@ -1224,12 +1476,15 @@ class MultidimensionalAnalyzer:
         
         return behavior_stats
 
-    def _summarize_communication_style(self, profile: UserProfile) -> Dict[str, str]:
+    def _summarize_communication_style(self, profile) -> Dict[str, str]:
         """总结沟通风格"""
         style_summary = {}
         
-        if 'length' in profile.communication_style and profile.communication_style['length']:
-            avg_length = sum(profile.communication_style['length']) / len(profile.communication_style['length'])
+        # 兼容处理UserProfile对象和dict
+        communication_style = profile.communication_style if hasattr(profile, 'communication_style') else profile.get('communication_style', {})
+        
+        if 'length' in communication_style and communication_style['length']:
+            avg_length = sum(communication_style['length']) / len(communication_style['length'])
             if avg_length > 50:
                 style_summary['length_style'] = '详细型'
             elif avg_length > 20:
@@ -1239,12 +1494,15 @@ class MultidimensionalAnalyzer:
         
         return style_summary
 
-    def _summarize_activity_pattern(self, profile: UserProfile) -> Dict[str, Any]:
+    def _summarize_activity_pattern(self, profile) -> Dict[str, Any]:
         """总结活动模式"""
         activity_summary = {}
         
-        if 'activity_hours' in profile.activity_pattern:
-            hours = profile.activity_pattern['activity_hours']
+        # 兼容处理UserProfile对象和dict
+        activity_pattern = profile.activity_pattern if hasattr(profile, 'activity_pattern') else profile.get('activity_pattern', {})
+        
+        if 'activity_hours' in activity_pattern:
+            hours = activity_pattern['activity_hours']
             if hours:
                 peak_hour = max(hours.items(), key=lambda x: x[1])[0] # 修正为获取键
                 activity_summary['peak_hour'] = peak_hour
@@ -1263,12 +1521,26 @@ class MultidimensionalAnalyzer:
         # 导出节点（用户）
         # 从数据库加载所有用户画像，而不是只���内存中获取
         # 为了简化，这里仍然使用内存中的 user_profiles，但实际应该从数据库加载
-        for qq_id, profile in self.user_profiles.items():
+        for user_key, profile in self.user_profiles.items():
+            # 从user_key中提取用户ID用于显示
+            display_id = user_key.split(':')[-1] if ':' in user_key else user_key
+            
+            # 兼容处理UserProfile对象和dict
+            if hasattr(profile, 'qq_name'):
+                name = profile.qq_name
+                nicknames = profile.nicknames
+                activity_level = len(profile.activity_pattern.get('activity_hours', {}))
+            else:
+                name = profile.get('name', f'用户{display_id}')
+                nicknames = profile.get('nicknames', [])
+                activity_level = len(profile.get('activity_pattern', {}).get('activity_hours', {}))
+            
             graph_data['nodes'].append({
-                'id': qq_id,
-                'name': profile.qq_name,
-                'nicknames': profile.nicknames,
-                'activity_level': len(profile.activity_pattern.get('activity_hours', {}))
+                'id': display_id,
+                'name': name,
+                'nicknames': nicknames,
+                'user_key': user_key,
+                'activity_level': activity_level
             })
         
         # 导出边（关系）

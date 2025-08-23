@@ -7,12 +7,13 @@ from typing import Dict, List, Optional, Any
 
 
 class LLMClientExtension:
-    """LLM客户端扩展，提供统一的生成接口"""
+    """LLM客户端扩展，提供统一的生成接口 - 已弃用，建议使用FrameworkLLMAdapter"""
     
-    def __init__(self, llm_client, config, persona_manager=None):
+    def __init__(self, llm_client, config, persona_manager=None, llm_adapter=None):
         self.llm_client = llm_client
         self.config = config
         self.persona_manager = persona_manager
+        self.llm_adapter = llm_adapter  # 新增适配器支持
     
     async def generate_response(self, prompt: str, model_name: Optional[str] = None, 
                                group_id: Optional[str] = None, **kwargs) -> str:
@@ -35,23 +36,29 @@ class LLMClientExtension:
                     from astrbot.api import logger
                     logger.error(f"获取人格描述失败: {e}")
             
-            # 获取模型配置（向后兼容）
-            # 由于新版本配置已简化，统一使用filter配置作为默认
-            api_url = getattr(self.config, 'filter_api_url', 'http://localhost:1234/v1/chat/completions')
-            api_key = getattr(self.config, 'filter_api_key', 'not-needed')
-            # 如果没有传入模型名称，使用默认值
-            if not model_name:
-                model_name = 'gpt-4o'
-            
-            # 调用LLM
-            response = await self.llm_client.chat_completion(
-                api_url=api_url,
-                api_key=api_key,
-                model_name=model_name,
-                prompt=prompt,
-                system_prompt=system_prompt,
-                **kwargs
-            )
+            # 优先使用新的适配器
+            if self.llm_adapter and self.llm_adapter.has_filter_provider():
+                response = await self.llm_adapter.filter_chat_completion(
+                    prompt=prompt,
+                    system_prompt=system_prompt
+                )
+            else:
+                # 向后兼容：使用老式API配置
+                api_url = getattr(self.config, 'filter_api_url', 'http://localhost:1234/v1/chat/completions')
+                api_key = getattr(self.config, 'filter_api_key', 'not-needed')
+                # 如果没有传入模型名称，使用默认值
+                if not model_name:
+                    model_name = 'gpt-4o'
+                
+                # 调用LLM
+                response = await self.llm_client.chat_completion(
+                    api_url=api_url,
+                    api_key=api_key,
+                    model_name=model_name,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    **kwargs
+                )
             
             if response and hasattr(response, 'text'):
                 return response.text()

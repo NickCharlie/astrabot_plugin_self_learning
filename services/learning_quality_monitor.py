@@ -214,7 +214,6 @@ class LearningQualityMonitor:
 
     async def _calculate_emotional_balance(self, messages: List[Dict[str, Any]]) -> float:
         """使用LLM计算情感平衡性"""
-        # LLMClient已弃用，仅使用框架适配器 
         if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
             return self._simple_emotional_balance(messages)
 
@@ -224,15 +223,14 @@ class LearningQualityMonitor:
             batch_messages=messages_text
         )
         try:
-            # 优先使用框架适配器
+            # 使用框架适配器
             if self.llm_adapter and self.llm_adapter.has_refine_provider():
                 response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-            # LLMClient已弃用，不再检查
             else:
                 logger.warning("没有可用的LLM服务")
                 return self._simple_emotional_balance(messages)
             
-            # 处理响应（兼容框架适配器返回字符串和LLM客户端返回对象）
+            # 处理响应
             response_text = response if isinstance(response, str) else (response.text() if response and hasattr(response, 'text') else None)
             if response_text:
                 # 使用安全的JSON解析

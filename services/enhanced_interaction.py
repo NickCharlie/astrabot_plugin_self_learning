@@ -19,7 +19,6 @@ from ..config import PluginConfig
 from ..core.patterns import AsyncServiceBase
 from ..core.interfaces import IDataStorage
 from ..core.framework_llm_adapter import FrameworkLLMAdapter
-from ..core.llm_client import LLMClient
 
 
 @dataclass
@@ -48,15 +47,11 @@ class EnhancedInteractionService(AsyncServiceBase):
     """增强交互服务"""
     
     def __init__(self, config: PluginConfig, database_manager: IDataStorage, 
-                 llm_adapter: Optional[FrameworkLLMAdapter] = None,
-                 llm_client: Optional[LLMClient] = None):
+                 llm_adapter: Optional[FrameworkLLMAdapter] = None):
         super().__init__("enhanced_interaction")
         self.config = config
         self.db_manager = database_manager
         self.llm_adapter = llm_adapter
-        
-        # 向后兼容性支持
-        self.llm_client = llm_client if llm_client else None
         
         # 多轮对话管理
         self.conversation_contexts: Dict[str, ConversationContext] = {}

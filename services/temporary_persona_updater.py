@@ -13,7 +13,6 @@ from astrbot.api.star import Context
 
 from ..config import PluginConfig
 from ..core.interfaces import IPersonaUpdater, IPersonaBackupManager
-from ..core.llm_client import LLMClient
 from ..services.database_manager import DatabaseManager
 from ..statics.temp_persona_messages import TemporaryPersonaMessages
 from ..statics.prompts import MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT
@@ -35,13 +34,12 @@ class TemporaryPersonaUpdater:
                  context: Context,
                  persona_updater: IPersonaUpdater,
                  backup_manager: IPersonaBackupManager,
-                 db_manager: DatabaseManager,
-                 llm_client: Optional[LLMClient] = None):
+                 db_manager: DatabaseManager):
         self.config = config
         self.context = context
         self.persona_updater = persona_updater
         self.backup_manager = backup_manager
-        self.llm_client = llm_client
+        # llm_client 参数保持为了兼容性，但不使用
         self.db_manager = db_manager
         
         # 临时人格存储
@@ -756,6 +754,10 @@ class TemporaryPersonaUpdater:
             markers_to_clean = [
                 "【增量更新 -",
                 "【当前情绪状态 -", 
+                "【当前社交关系状态 -",
+                "【当前用户档案 -",
+                "【当前学习洞察 -",
+                "【当前上下文状态 -",
                 "【行为调整】"
             ]
             
@@ -902,6 +904,244 @@ class TemporaryPersonaUpdater:
         for task in self.expiry_tasks.values():
             task.cancel()
         self.expiry_tasks.clear()
+
+    async def _apply_social_relationship_update_to_system_prompt(self, group_id: str, relationship_info: dict) -> bool:
+        """
+        直接将社交关系更新应用到系统的 system prompt
+        
+        Args:
+            group_id: 群组ID
+            relationship_info: 社交关系信息 (包含用户关系、群体氛围等)
+            
+        Returns:
+            bool: 是否应用成功
+        """
+        try:
+            provider = self.context.get_using_provider()
+            if not provider or not hasattr(provider, 'curr_personality') or not provider.curr_personality:
+                logger.warning("无法获取provider或当前人格，无法直接更新system prompt")
+                return False
+            
+            current_prompt = provider.curr_personality.get('prompt', '')
+            cleaned_prompt = self._clean_duplicate_content(current_prompt)
+            
+            # 构建社交关系更新文本
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+            relationship_text = f"\n\n【当前社交关系状态 - {timestamp}】\n"
+            
+            if 'user_relationships' in relationship_info:
+                relationship_text += "• 用户关系: " + relationship_info['user_relationships'] + "\n"
+            if 'group_atmosphere' in relationship_info:
+                relationship_text += "• 群体氛围: " + relationship_info['group_atmosphere'] + "\n"
+            if 'interaction_style' in relationship_info:
+                relationship_text += "• 互动风格: " + relationship_info['interaction_style'] + "\n"
+                
+            relationship_text += "• 请根据当前社交关系状态调整回复方式和互动风格"
+            
+            updated_prompt = cleaned_prompt + relationship_text
+            provider.curr_personality['prompt'] = updated_prompt
+            
+            logger.info(f"成功将社交关系状态直接更新到system prompt")
+            logger.info(f"关系信息: {relationship_info}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"直接更新社交关系到system prompt失败: {e}")
+            return False
+
+    async def _apply_user_profile_update_to_system_prompt(self, group_id: str, profile_info: dict) -> bool:
+        """
+        直接将用户档案更新应用到系统的 system prompt
+        
+        Args:
+            group_id: 群组ID
+            profile_info: 用户档案信息 (包含用户偏好、兴趣等)
+            
+        Returns:
+            bool: 是否应用成功
+        """
+        try:
+            provider = self.context.get_using_provider()
+            if not provider or not hasattr(provider, 'curr_personality') or not provider.curr_personality:
+                logger.warning("无法获取provider或当前人格，无法直接更新system prompt")
+                return False
+            
+            current_prompt = provider.curr_personality.get('prompt', '')
+            cleaned_prompt = self._clean_duplicate_content(current_prompt)
+            
+            # 构建用户档案更新文本
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+            profile_text = f"\n\n【当前用户档案 - {timestamp}】\n"
+            
+            if 'preferences' in profile_info:
+                profile_text += "• 用户偏好: " + profile_info['preferences'] + "\n"
+            if 'interests' in profile_info:
+                profile_text += "• 兴趣爱好: " + profile_info['interests'] + "\n"
+            if 'communication_style' in profile_info:
+                profile_text += "• 沟通风格: " + profile_info['communication_style'] + "\n"
+            if 'personality_traits' in profile_info:
+                profile_text += "• 性格特征: " + profile_info['personality_traits'] + "\n"
+                
+            profile_text += "• 请根据用户档案信息调整回复内容和方式以更好地适应用户"
+            
+            updated_prompt = cleaned_prompt + profile_text
+            provider.curr_personality['prompt'] = updated_prompt
+            
+            logger.info(f"成功将用户档案直接更新到system prompt")
+            logger.info(f"档案信息: {profile_info}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"直接更新用户档案到system prompt失败: {e}")
+            return False
+
+    async def _apply_learning_insights_update_to_system_prompt(self, group_id: str, insights_info: dict) -> bool:
+        """
+        直接将学习洞察更新应用到系统的 system prompt
+        
+        Args:
+            group_id: 群组ID
+            insights_info: 学习洞察信息 (包含交互模式、改进建议等)
+            
+        Returns:
+            bool: 是否应用成功
+        """
+        try:
+            provider = self.context.get_using_provider()
+            if not provider or not hasattr(provider, 'curr_personality') or not provider.curr_personality:
+                logger.warning("无法获取provider或当前人格，无法直接更新system prompt")
+                return False
+            
+            current_prompt = provider.curr_personality.get('prompt', '')
+            cleaned_prompt = self._clean_duplicate_content(current_prompt)
+            
+            # 构建学习洞察更新文本
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+            insights_text = f"\n\n【当前学习洞察 - {timestamp}】\n"
+            
+            if 'interaction_patterns' in insights_info:
+                insights_text += "• 交互模式: " + insights_info['interaction_patterns'] + "\n"
+            if 'improvement_suggestions' in insights_info:
+                insights_text += "• 改进建议: " + insights_info['improvement_suggestions'] + "\n"
+            if 'effective_strategies' in insights_info:
+                insights_text += "• 有效策略: " + insights_info['effective_strategies'] + "\n"
+            if 'learning_focus' in insights_info:
+                insights_text += "• 学习重点: " + insights_info['learning_focus'] + "\n"
+                
+            insights_text += "• 请根据学习洞察调整回复策略和改进交互质量"
+            
+            updated_prompt = cleaned_prompt + insights_text
+            provider.curr_personality['prompt'] = updated_prompt
+            
+            logger.info(f"成功将学习洞察直接更新到system prompt")
+            logger.info(f"洞察信息: {insights_info}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"直接更新学习洞察到system prompt失败: {e}")
+            return False
+
+    async def _apply_context_awareness_update_to_system_prompt(self, group_id: str, context_info: dict) -> bool:
+        """
+        直接将上下文感知更新应用到系统的 system prompt
+        
+        Args:
+            group_id: 群组ID
+            context_info: 上下文感知信息 (包含当前话题、对话状态等)
+            
+        Returns:
+            bool: 是否应用成功
+        """
+        try:
+            provider = self.context.get_using_provider()
+            if not provider or not hasattr(provider, 'curr_personality') or not provider.curr_personality:
+                logger.warning("无法获取provider或当前人格，无法直接更新system prompt")
+                return False
+            
+            current_prompt = provider.curr_personality.get('prompt', '')
+            cleaned_prompt = self._clean_duplicate_content(current_prompt)
+            
+            # 构建上下文感知更新文本
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+            context_text = f"\n\n【当前上下文状态 - {timestamp}】\n"
+            
+            if 'current_topic' in context_info:
+                context_text += "• 当前话题: " + context_info['current_topic'] + "\n"
+            if 'conversation_state' in context_info:
+                context_text += "• 对话状态: " + context_info['conversation_state'] + "\n"
+            if 'recent_focus' in context_info:
+                context_text += "• 近期关注: " + context_info['recent_focus'] + "\n"
+            if 'dialogue_flow' in context_info:
+                context_text += "• 对话流向: " + context_info['dialogue_flow'] + "\n"
+                
+            context_text += "• 请根据当前上下文状态保持话题连贯性并提供相关回复"
+            
+            updated_prompt = cleaned_prompt + context_text
+            provider.curr_personality['prompt'] = updated_prompt
+            
+            logger.info(f"成功将上下文感知直接更新到system prompt")
+            logger.info(f"上下文信息: {context_info}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"直接更新上下文感知到system prompt失败: {e}")
+            return False
+
+    async def apply_comprehensive_update_to_system_prompt(self, group_id: str, update_data: dict) -> bool:
+        """
+        综合应用多种类型的增量更新到 system prompt
+        
+        Args:
+            group_id: 群组ID
+            update_data: 包含各种更新类型的数据字典
+            
+        Returns:
+            bool: 是否应用成功
+        """
+        try:
+            success_count = 0
+            total_updates = 0
+            
+            # 应用情绪更新
+            if 'mood' in update_data:
+                total_updates += 1
+                if await self._apply_mood_update_to_system_prompt(group_id, update_data['mood']):
+                    success_count += 1
+            
+            # 应用社交关系更新
+            if 'social_relationship' in update_data:
+                total_updates += 1
+                if await self._apply_social_relationship_update_to_system_prompt(group_id, update_data['social_relationship']):
+                    success_count += 1
+            
+            # 应用用户档案更新
+            if 'user_profile' in update_data:
+                total_updates += 1
+                if await self._apply_user_profile_update_to_system_prompt(group_id, update_data['user_profile']):
+                    success_count += 1
+            
+            # 应用学习洞察更新
+            if 'learning_insights' in update_data:
+                total_updates += 1
+                if await self._apply_learning_insights_update_to_system_prompt(group_id, update_data['learning_insights']):
+                    success_count += 1
+            
+            # 应用上下文感知更新
+            if 'context_awareness' in update_data:
+                total_updates += 1
+                if await self._apply_context_awareness_update_to_system_prompt(group_id, update_data['context_awareness']):
+                    success_count += 1
+            
+            logger.info(f"综合更新完成: {success_count}/{total_updates} 项更新成功应用")
+            return success_count > 0
+            
+        except Exception as e:
+            logger.error(f"综合应用增量更新失败: {e}")
+            return False
 
     async def stop(self):
         """停止服务"""

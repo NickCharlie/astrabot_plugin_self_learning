@@ -132,6 +132,9 @@ class SelfLearningPlugin(star.Star):
             self.ml_analyzer = self.service_factory.create_ml_analyzer()
             self.persona_manager = self.service_factory.create_persona_manager()
             
+            # 设置渐进式学习服务的增量更新回调函数，降低耦合性
+            self.progressive_learning.set_update_system_prompt_callback(self._update_system_prompt_for_group)
+            
             # 获取组件工厂并创建新的高级服务
             component_factory = self.factory_manager.get_component_factory()
             self.data_analytics = component_factory.create_data_analytics_service()
@@ -245,6 +248,202 @@ class SelfLearningPlugin(star.Star):
         except Exception as e:
             logger.error(StatusMessages.LEARNING_SERVICE_START_FAILED.format(group_id=group_id, error=e))
 
+    async def _priority_update_incremental_content(self, group_id: str, sender_id: str, message_text: str, event: AstrMessageEvent):
+        """
+        优先更新增量内容 - 每收到一条消息都会立即调用
+        确保所有增量更新内容都能优先加入到system_prompt中
+        """
+        try:
+            logger.info(f"开始优先更新增量内容: group_id={group_id}, sender_id={sender_id[:8]}")
+            
+            # 1. 立即进行消息的多维度分析（实时分析）
+            if hasattr(self, 'multidimensional_analyzer') and self.multidimensional_analyzer:
+                try:
+                    # 立即分析当前消息的上下文
+                    analysis_result = await self.multidimensional_analyzer.analyze_message_context(
+                        event, message_text
+                    )
+                    if analysis_result:
+                        logger.info(f"实时多维度分析完成，包含 {len(analysis_result)} 个维度")
+                except Exception as e:
+                    logger.error(f"实时多维度分析失败: {e}")
+            
+            # 2. 立即更新用户画像和社交关系
+            if hasattr(self, 'affection_manager') and self.affection_manager:
+                try:
+                    # 立即更新好感度和社交关系
+                    affection_result = await self.affection_manager.process_message_interaction(
+                        group_id, sender_id, message_text
+                    )
+                    if affection_result and affection_result.get('success'):
+                        logger.debug(f"实时好感度更新完成: {affection_result}")
+                except Exception as e:
+                    logger.error(f"实时好感度更新失败: {e}")
+            
+            # 3. 立即进行情绪和风格分析
+            if hasattr(self, 'style_analyzer') and self.style_analyzer:
+                try:
+                    # 获取最近的消息进行风格分析
+                    recent_messages = await self.db_manager.get_recent_filtered_messages(group_id, limit=5)
+                    # 添加当前消息
+                    current_message = {
+                        'message': message_text,
+                        'sender_id': sender_id,
+                        'timestamp': time.time()
+                    }
+                    analysis_messages = recent_messages + [current_message]
+                    
+                    # 立即分析消息的风格
+                    style_result = await self.style_analyzer.analyze_conversation_style(
+                        group_id, analysis_messages
+                    )
+                    if style_result:
+                        logger.debug(f"实时风格分析完成: {style_result}")
+                except Exception as e:
+                    logger.error(f"实时风格分析失败: {e}")
+            
+            # 4. 立即应用所有增量更新到system_prompt
+            try:
+                success = await self._update_system_prompt_for_group(group_id)
+                if success:
+                    logger.info(f"群组 {group_id} 增量更新优先应用到system_prompt成功")
+                else:
+                    logger.warning(f"群组 {group_id} 增量更新应用失败")
+            except Exception as e:
+                logger.error(f"增量更新应用异常 (群:{group_id}): {e}", exc_info=True)
+            
+            # 5. 如果启用实时学习，立即进行深度分析
+            if self.plugin_config.enable_realtime_learning:
+                try:
+                    await self._process_message_realtime(group_id, message_text, sender_id)
+                    logger.debug(f"实时学习处理完成: {group_id}")
+                except Exception as e:
+                    logger.error(f"实时学习处理失败: {e}")
+            
+            logger.info(f"增量内容优先更新流程完成: {group_id}")
+            
+        except Exception as e:
+            logger.error(f"优先更新增量内容异常: {e}", exc_info=True)
+
+    async def _update_system_prompt_for_group(self, group_id: str):
+        """
+        为特定群组实时更新system_prompt，集成所有可用的增量更新
+        """
+        try:
+            # 收集当前群组的各种增量更新数据
+            update_data = {}
+            recent_messages = []  # 初始化变量
+            
+            # 1. 获取用户档案信息
+            try:
+                # 从多维分析器获取用户档案
+                if hasattr(self, 'multidimensional_analyzer') and self.multidimensional_analyzer:
+                    # 获取群组中最活跃的用户信息
+                    user_profiles = getattr(self.multidimensional_analyzer, 'user_profiles', {})
+                    if user_profiles:
+                        # 合并所有用户的信息作为群组特征
+                        communication_styles = []
+                        activity_patterns = []
+                        emotional_tendencies = []
+                        
+                        for user_id, profile in user_profiles.items():
+                            if hasattr(profile, 'communication_style') and profile.communication_style:
+                                # 转换沟通风格为可读描述
+                                style_desc = self._format_communication_style(profile.communication_style)
+                                if style_desc:
+                                    communication_styles.append(style_desc)
+                            if hasattr(profile, 'activity_pattern') and profile.activity_pattern:
+                                activity_patterns.append(f"用户{user_id[:6]}活跃度{profile.activity_pattern.get('frequency', '普通')}")
+                            if hasattr(profile, 'emotional_tendency') and profile.emotional_tendency:
+                                # 转换情感倾向为可读描述
+                                emotion_desc = self._format_emotional_tendency(profile.emotional_tendency)
+                                if emotion_desc:
+                                    emotional_tendencies.append(emotion_desc)
+                        
+                        if communication_styles or activity_patterns or emotional_tendencies:
+                            update_data['user_profile'] = {
+                                'preferences': '; '.join(activity_patterns[:3]) if activity_patterns else '',
+                                'communication_style': '; '.join(communication_styles[:2]) if communication_styles else '',
+                                'personality_traits': '; '.join(emotional_tendencies[:2]) if emotional_tendencies else ''
+                            }
+            except Exception as e:
+                logger.debug(f"获取用户档案信息失败: {e}")
+            
+            # 2. 获取社交关系信息
+            try:
+                # 从数据库获取最近的群组互动信息
+                recent_messages = await self.db_manager.get_recent_filtered_messages(group_id, limit=10)
+                if recent_messages and len(recent_messages) > 1:
+                    # 分析群组氛围
+                    message_count = len(recent_messages)
+                    unique_users = len(set(msg['sender_id'] for msg in recent_messages))
+                    
+                    if unique_users > 1:
+                        atmosphere = f"活跃群聊，{unique_users}人参与"
+                    else:
+                        atmosphere = "私聊对话"
+                        
+                    update_data['social_relationship'] = {
+                        'user_relationships': f"群组成员{unique_users}人",
+                        'group_atmosphere': atmosphere,
+                        'interaction_style': f"近期消息{message_count}条"
+                    }
+            except Exception as e:
+                logger.debug(f"获取社交关系信息失败: {e}")
+            
+            # 3. 获取上下文感知信息
+            try:
+                # 从最近的消息中分析对话状态
+                if recent_messages and len(recent_messages) > 0:
+                    latest_msg = recent_messages[0]['message'] if recent_messages else ''
+                    if latest_msg:
+                        # 简单的话题提取（取前20个字符作为当前话题）
+                        current_topic = latest_msg[:20] + '...' if len(latest_msg) > 20 else latest_msg
+                        
+                        update_data['context_awareness'] = {
+                            'current_topic': current_topic,
+                            'conversation_state': '进行中',
+                            'dialogue_flow': f"最近{len(recent_messages)}条消息的对话"
+                        }
+            except Exception as e:
+                logger.debug(f"获取上下文信息失败: {e}")
+            
+            # 4. 获取学习洞察信息
+            try:
+                # 从学习统计信息中获取基本洞察
+                if hasattr(self, 'learning_stats') and self.learning_stats:
+                    learning_info = {
+                        'interaction_patterns': f"已学习消息: {getattr(self.learning_stats, 'total_messages_processed', 0)}条",
+                        'improvement_suggestions': '基于历史对话的适应性调整',
+                        'effective_strategies': '持续学习和优化中',
+                        'learning_focus': '个性化交互改进'
+                    }
+                    
+                    # 如果有处理过的消息，添加学习洞察
+                    if getattr(self.learning_stats, 'total_messages_processed', 0) > 0:
+                        update_data['learning_insights'] = learning_info
+            except Exception as e:
+                logger.debug(f"获取学习洞察失败: {e}")
+            
+            # 应用所有收集到的增量更新
+            if update_data:
+                success = await self.temporary_persona_updater.apply_comprehensive_update_to_system_prompt(
+                    group_id, update_data
+                )
+                if success:
+                    logger.info(f"群组 {group_id} system_prompt实时更新成功，包含 {len(update_data)} 种类型的增量更新")
+                    return True
+                else:
+                    logger.warning(f"群组 {group_id} system_prompt更新失败")
+                    return False
+            else:
+                logger.debug(f"群组 {group_id} 暂无可用的增量更新数据")
+                return True  # 没有数据也算成功
+                
+        except Exception as e:
+            logger.error(f"群组 {group_id} 实时更新system_prompt异常: {e}", exc_info=True)
+            return False
+
     def _is_plugin_command(self, message_text: str) -> bool:
         """使用正则表达式检查消息是否为插件命令"""
         if not message_text:
@@ -302,6 +501,14 @@ class SelfLearningPlugin(star.Star):
             # 过滤插件命令 - 避免命令被当作聊天消息处理
             if self._is_plugin_command(message_text):
                 return
+            
+            # 优先更新增量内容 - 每收到消息都立即执行
+            # 注释掉实时分析以提升回复速度，改为按配置定时分析
+            # try:
+            #     await self._priority_update_incremental_content(group_id, sender_id, message_text, event)
+            #     logger.debug(f"优先增量内容更新完成: {group_id}")
+            # except Exception as e:
+            #     logger.error(f"优先增量内容更新失败: {e}")
                 
             # 收集消息
             await self.message_collector.collect_message({
@@ -1149,3 +1356,122 @@ class SelfLearningPlugin(star.Star):
             
         except Exception as e:
             logger.error(LogMessages.PLUGIN_UNLOAD_CLEANUP_FAILED.format(error=e), exc_info=True)
+    
+    def _format_communication_style(self, communication_style: dict) -> str:
+        """
+        将沟通风格字典转换为可读描述
+        
+        Args:
+            communication_style: 沟通风格字典
+            
+        Returns:
+            str: 可读的描述文本
+        """
+        try:
+            if not communication_style or not isinstance(communication_style, dict):
+                return ""
+            
+            descriptions = []
+            
+            # 解析各种沟通风格特征
+            if 'formality' in communication_style:
+                formality = communication_style['formality']
+                if formality > 0.7:
+                    descriptions.append("正式礼貌")
+                elif formality < 0.3:
+                    descriptions.append("随意轻松")
+                else:
+                    descriptions.append("适中得体")
+            
+            if 'enthusiasm' in communication_style:
+                enthusiasm = communication_style['enthusiasm']
+                if enthusiasm > 0.7:
+                    descriptions.append("热情活跃")
+                elif enthusiasm < 0.3:
+                    descriptions.append("冷静内敛")
+            
+            if 'directness' in communication_style:
+                directness = communication_style['directness']
+                if directness > 0.7:
+                    descriptions.append("直接坦率")
+                elif directness < 0.3:
+                    descriptions.append("委婉含蓄")
+            
+            if 'humor_usage' in communication_style:
+                humor = communication_style['humor_usage']
+                if humor > 0.6:
+                    descriptions.append("幽默风趣")
+            
+            if 'emoji_usage' in communication_style:
+                emoji = communication_style['emoji_usage']
+                if emoji > 0.6:
+                    descriptions.append("表情丰富")
+            
+            return "，".join(descriptions) if descriptions else "普通交流风格"
+            
+        except Exception as e:
+            logger.debug(f"格式化沟通风格失败: {e}")
+            return ""
+    
+    def _format_emotional_tendency(self, emotional_tendency: dict) -> str:
+        """
+        将情感倾向字典转换为可读描述
+        
+        Args:
+            emotional_tendency: 情感倾向字典
+            
+        Returns:
+            str: 可读的描述文本
+        """
+        try:
+            if not emotional_tendency or not isinstance(emotional_tendency, dict):
+                return ""
+            
+            descriptions = []
+            
+            # 解析情感倾向特征
+            if 'positivity' in emotional_tendency:
+                positivity = emotional_tendency['positivity']
+                if positivity > 0.7:
+                    descriptions.append("积极乐观")
+                elif positivity < 0.3:
+                    descriptions.append("情绪较低")
+            
+            if 'stability' in emotional_tendency:
+                stability = emotional_tendency['stability']
+                if stability > 0.7:
+                    descriptions.append("情绪稳定")
+                elif stability < 0.3:
+                    descriptions.append("情绪波动")
+            
+            if 'empathy' in emotional_tendency:
+                empathy = emotional_tendency['empathy']
+                if empathy > 0.6:
+                    descriptions.append("善解人意")
+            
+            if 'expressiveness' in emotional_tendency:
+                expressiveness = emotional_tendency['expressiveness']
+                if expressiveness > 0.6:
+                    descriptions.append("表达丰富")
+                elif expressiveness < 0.3:
+                    descriptions.append("表达内敛")
+            
+            if 'dominant_emotion' in emotional_tendency:
+                dominant = emotional_tendency['dominant_emotion']
+                emotion_map = {
+                    'happy': '快乐',
+                    'calm': '平静',
+                    'excited': '兴奋',
+                    'serious': '严肃',
+                    'playful': '活泼',
+                    'thoughtful': '深思',
+                    'caring': '关怀'
+                }
+                if dominant in emotion_map:
+                    descriptions.append(f"偏向{emotion_map[dominant]}")
+            
+            return "，".join(descriptions) if descriptions else "情感表达平和"
+            
+        except Exception as e:
+            logger.debug(f"格式化情感倾向失败: {e}")
+            return ""

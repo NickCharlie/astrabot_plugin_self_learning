@@ -34,11 +34,12 @@ class LightweightMLAnalyzer:
     
     def __init__(self, config: PluginConfig, db_manager: DatabaseManager, 
                  llm_adapter: Optional[FrameworkLLMAdapter] = None,
-                 prompts: Any = None): # 使用框架适配器替代LLMClient
+                 prompts: Any = None, temporary_persona_updater = None): # 使用框架适配器替代LLMClient
         self.config = config
         self.db_manager = db_manager
         self.llm_adapter = llm_adapter  # 使用框架适配器
         self.prompts = prompts # 保存 prompts
+        self.temporary_persona_updater = temporary_persona_updater # 保存临时人格更新器引用
         
         # 设置分析限制以节省资源
         self.max_sample_size = 100  # 最大样本数量
@@ -87,7 +88,7 @@ class LightweightMLAnalyzer:
 
             # 调用强化模型进行记忆重放分析
             response = await self.llm_adapter.reinforce_chat_completion(
-                prompt=self.prompts.REINFORCEMENT_LEARNING_MEMORY_REPLAY_PROMPT.format(
+                prompt=self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.REINFORCEMENT_LEARNING_MEMORY_REPLAY_PROMPT.format(
                     historical_learning_data=json.dumps(historical_summary, ensure_ascii=False, indent=2),
                     new_learning_data=json.dumps(new_data_summary, ensure_ascii=False, indent=2),
                     current_persona=json.dumps(current_persona, ensure_ascii=False, indent=2)
@@ -95,9 +96,9 @@ class LightweightMLAnalyzer:
                 temperature=0.7
             )
 
-            if response and response.text():
-                # 清理响应文本，移除markdown标识符
-                clean_response = self._clean_llm_json_response(response.text())
+            if response:
+                # response 是字符串，清理响应文本，移除markdown标识符
+                clean_response = self._clean_llm_json_response(response)
                 
                 try:
                     reinforcement_result = safe_parse_llm_json(clean_response)
@@ -138,7 +139,7 @@ class LightweightMLAnalyzer:
             
             # 调用强化模型进行增量微调分析
             response = await self.llm_adapter.reinforce_chat_completion(
-                prompt=self.prompts.REINFORCEMENT_LEARNING_INCREMENTAL_TUNING_PROMPT.format(
+                prompt=self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.REINFORCEMENT_LEARNING_INCREMENTAL_TUNING_PROMPT.format(
                     base_persona=json.dumps(base_persona, ensure_ascii=False, indent=2),
                     incremental_updates=json.dumps(incremental_updates, ensure_ascii=False, indent=2),
                     fusion_history=json.dumps(fusion_history, ensure_ascii=False, indent=2)
@@ -146,9 +147,9 @@ class LightweightMLAnalyzer:
                 temperature=0.6
             )
 
-            if response and response.text():
-                # 清理响应文本，移除markdown标识符
-                clean_response = self._clean_llm_json_response(response.text())
+            if response:
+                # response 是字符串，清理响应文本，移除markdown标识符
+                clean_response = self._clean_llm_json_response(response)
                 
                 try:
                     tuning_result = safe_parse_llm_json(clean_response)
@@ -196,7 +197,7 @@ class LightweightMLAnalyzer:
             
             # 调用强化模型进行策略优化
             response = await self.llm_adapter.reinforce_chat_completion(
-                prompt=self.prompts.REINFORCEMENT_LEARNING_STRATEGY_OPTIMIZATION_PROMPT.format(
+                prompt=self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.REINFORCEMENT_LEARNING_STRATEGY_OPTIMIZATION_PROMPT.format(
                     learning_history=json.dumps(learning_history, ensure_ascii=False, indent=2),
                     current_strategy=json.dumps(current_strategy, ensure_ascii=False, indent=2),
                     performance_metrics=json.dumps(performance_metrics, ensure_ascii=False, indent=2)
@@ -204,9 +205,9 @@ class LightweightMLAnalyzer:
                 temperature=0.5
             )
 
-            if response and response.text():
-                # 清理响应文本，移除markdown标识符
-                clean_response = self._clean_llm_json_response(response.text())
+            if response:
+                # response 是字符串，清理响应文本，移除markdown标识符
+                clean_response = self._clean_llm_json_response(response)
                 
                 try:
                     optimization_result = safe_parse_llm_json(clean_response)
@@ -301,7 +302,9 @@ class LightweightMLAnalyzer:
             # 示例：让LLM总结这些消息的特点，并与当前人格进行对比
             messages_text = "\n".join([msg['message'] for msg in sorted_messages])
             
-            prompt = f"""{self.prompts.ML_ANALYZER_REPLAY_MEMORY_SYSTEM_PROMPT.format(
+            prompt = f"""{self.prompts.JSON_ONLY_SYSTEM_PROMPT}
+
+{self.prompts.ML_ANALYZER_REPLAY_MEMORY_SYSTEM_PROMPT.format(
                 current_persona_description=current_persona['description']
             )}
 
@@ -314,13 +317,36 @@ class LightweightMLAnalyzer:
                 temperature=0.3
             )
 
-            if response and response.text():
-                # 清理响应文本，移除markdown标识符
-                clean_response = self._clean_llm_json_response(response.text())
+            if response:
+                # response 是字符串，清理响应文本，移除markdown标识符
+                clean_response = self._clean_llm_json_response(response)
                 
                 try:
                     refined_data = safe_parse_llm_json(clean_response)
                     logger.info(f"记忆重放提炼结果: {refined_data}")
+                    
+                    # 将强化学习结果集成到system_prompt
+                    if self.temporary_persona_updater:
+                        try:
+                            # 准备学习洞察更新数据
+                            insights_data = {
+                                'learning_insights': {
+                                    'interaction_patterns': refined_data.get('interaction_patterns', '通过记忆重放发现的交互模式'),
+                                    'improvement_suggestions': refined_data.get('suggested_improvements', '基于历史消息的改进建议'),
+                                    'effective_strategies': refined_data.get('effective_responses', '有效的回复策略'),
+                                    'learning_focus': f"记忆重放学习 - 处理了{len(new_messages)}条历史消息"
+                                }
+                            }
+                            
+                            await self.temporary_persona_updater.apply_comprehensive_update_to_system_prompt(
+                                group_id, insights_data
+                            )
+                            logger.info(f"成功将强化学习结果集成到system_prompt: {group_id}")
+                            
+                        except Exception as e:
+                            logger.error(f"集成强化学习结果到system_prompt失败: {e}")
+                    
+                    
                     # 这里可以将 refined_data 传递给 PersonaUpdater 进行人格更新
                     # 或者在 ProgressiveLearning 模块中处理
                     return refined_data
@@ -513,7 +539,7 @@ class LightweightMLAnalyzer:
             
         except Exception as e:
             logger.error(f"分析用户行为模式失败: {e}")
-            raise AnalysisError(f"分析用户行为模式失败: {str(e)}")
+            raise StyleAnalysisError(f"分析用户行为模式失败: {str(e)}")
 
     async def _get_user_messages(self, group_id: str, user_id: str, limit: int) -> List[Dict[str, Any]]:
         """获取用户消息（限制数量）"""
@@ -739,7 +765,7 @@ class LightweightMLAnalyzer:
 
         messages_text = "\n".join([msg['message'] for msg in messages])
         
-        prompt = self.prompts.ML_ANALYZER_SENTIMENT_ANALYSIS_PROMPT.format(
+        prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.ML_ANALYZER_SENTIMENT_ANALYSIS_PROMPT.format(
             messages_text=messages_text
         )
         try:
@@ -756,7 +782,7 @@ class LightweightMLAnalyzer:
                         sentiment_scores[key] = max(0.0, min(float(value), 1.0))
                     return sentiment_scores
                 except json.JSONDecodeError:
-                    logger.warning(f"LLM响应JSON解析失败，返回简化情感分析。响应内容: {response.text()}")
+                    logger.warning(f"LLM响应JSON解析失败，返回简化情感分析。响应内容: {response}")
                     return self._simple_sentiment_analysis(messages)
             return self._simple_sentiment_analysis(messages)
         except Exception as e:

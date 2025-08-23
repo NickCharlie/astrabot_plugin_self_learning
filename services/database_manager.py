@@ -510,7 +510,7 @@ class DatabaseManager(AsyncServiceBase):
                 json.dumps(profile_data.get('communication_style', {}), ensure_ascii=False),
                 json.dumps(profile_data.get('topic_preferences', {}), ensure_ascii=False),
                 json.dumps(profile_data.get('emotional_tendency', {}), ensure_ascii=False),
-                time.time(),
+                profile_data.get('last_active', time.time()),  # 使用profile中的值或当前时间
                 datetime.now().isoformat()
             ))
             

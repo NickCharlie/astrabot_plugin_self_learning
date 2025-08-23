@@ -11,7 +11,6 @@ from astrbot.api import logger
 from astrbot.api.star import Context
 
 from ..core.framework_llm_adapter import FrameworkLLMAdapter  # 导入框架适配器
-from ..core.llm_client import LLMClient  # 保持向后兼容
 from ..config import PluginConfig
 from ..exceptions import StyleAnalysisError, ModelAccessError
 from .database_manager import DatabaseManager # 导入 DatabaseManager
@@ -81,20 +80,19 @@ class StyleAnalyzerService:
             if not messages:
                 return {"error": "没有消息数据"}
             
-            # 获取强模型LLM客户端
-            llm_client = self._get_refine_model_client()
-            if not llm_client:
-                return {"error": "提炼模型LLM客户端未初始化，无法进行风格分析。"}
+            # 检查框架适配器是否可用
+            if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
+                return {"error": "提炼模型适配器未配置，无法进行风格分析。"}
             
             # 准备分析数据
             message_texts = [msg.get('message', '') for msg in messages]
             combined_text = '\n'.join(message_texts[:50])  # 限制长度避免token超限
             
             # 生成风格分析报告
-            style_analysis = await self._generate_style_analysis(combined_text, llm_client)
+            style_analysis = await self._generate_style_analysis(combined_text)
             
             # 提取数值化特征
-            style_profile = await self._extract_style_profile(combined_text, llm_client)
+            style_profile = await self._extract_style_profile(combined_text)
             
             # 检测风格变化
             style_evolution = None
@@ -118,25 +116,21 @@ class StyleAnalyzerService:
             logger.error(f"对话风格分析失败: {e}")
             raise StyleAnalysisError(f"风格分析失败: {str(e)}")
 
-    async def _generate_style_analysis(self, text: str, llm_client: LLMClient) -> Dict[str, Any]:
+    async def _generate_style_analysis(self, text: str) -> Dict[str, Any]:
         """生成详细的风格分析报告"""
         try:
             prompt = self.prompts.STYLE_ANALYZER_GENERATE_STYLE_ANALYSIS_PROMPT.format(
                 text=text
             )
             
-            # 优先使用框架适配器
+            # 使用框架适配器
             if self.llm_adapter and self.llm_adapter.has_refine_provider():
                 response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-            # 向后兼容：LLMClient已弃用，跳过
-            elif llm_client:
-                # LLMClient已弃用，返回错误信息
-                return {"error": "LLMClient已弃用，请使用FrameworkLLMAdapter"}
             else:
                 logger.warning("没有可用的LLM服务")
                 return {"error": "LLM服务不可用"}
             
-            # 处理响应（兼容框架适配器返回字符串和LLM客户端返回对象）
+            # 处理响应
             response_text = response if isinstance(response, str) else (response.text() if response and hasattr(response, 'text') else None)
             if response_text:
                 # 使用安全的JSON解析
@@ -157,25 +151,21 @@ class StyleAnalyzerService:
             logger.error(f"风格分析生成失败: {e}")
             return {"error": str(e)}
 
-    async def _extract_style_profile(self, text: str, llm_client: LLMClient) -> StyleProfile:
+    async def _extract_style_profile(self, text: str) -> StyleProfile:
         """提取数值化的风格档案"""
         try:
             prompt = self.prompts.STYLE_ANALYZER_EXTRACT_STYLE_PROFILE_PROMPT.format(
                 text=text
             )
             
-            # 优先使用框架适配器
+            # 使用框架适配器
             if self.llm_adapter and self.llm_adapter.has_refine_provider():
                 response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-            # 向后兼容：LLMClient已弃用，跳过
-            elif llm_client:
-                # LLMClient已弃用，返回默认StyleProfile
-                return StyleProfile()
             else:
                 logger.warning("没有可用的LLM服务")
                 return StyleProfile()
             
-            # 处理响应（兼容框架适配器返回字符串和LLM客户端返回对象）
+            # 处理响应
             response_text = response if isinstance(response, str) else (response.text() if response and hasattr(response, 'text') else None)
             if response_text:
                 # 使用安全的JSON解析
@@ -287,9 +277,9 @@ class StyleAnalyzerService:
             return {"error": "暂无基准风格数据"}
         
         try:
-            llm_client = self._get_refine_model_client()
-            if not llm_client:
-                return {"error": "提炼模型LLM客户端未初始化，无法生成风格建议。"}
+            # 使用框架适配器
+            if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
+                return {"error": "提炼模型适配器未配置，无法生成风格建议。"}
             
             current_style_data = self.baseline_style.__dict__
             
@@ -298,18 +288,10 @@ class StyleAnalyzerService:
                 target_persona=target_persona
             )
             
-            # 优先使用框架适配器
-            if self.llm_adapter and self.llm_adapter.has_refine_provider():
-                response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-            # 向后兼容：LLMClient已弃用，跳过
-            elif llm_client:
-                # LLMClient已弃用，返回错误信息
-                return {"error": "LLMClient已弃用，请使用FrameworkLLMAdapter"}
-            else:
-                logger.warning("没有可用的LLM服务")
-                return {"error": "LLM服务不可用"}
+            # 使用框架适配器
+            response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
             
-            # 处理响应（兼容框架适配器返回字符串和LLM客户端返回对象）
+            # 处理响应
             response_text = response if isinstance(response, str) else (response.text() if response and hasattr(response, 'text') else None)
             if response_text:
                 # 使用安全的JSON解析

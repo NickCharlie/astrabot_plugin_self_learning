@@ -2,6 +2,9 @@
 LLM Prompt 静态文件
 """
 
+# 通用JSON响应系统提示 - 确保LLM只返回JSON而不包含任何注释
+JSON_ONLY_SYSTEM_PROMPT = """重要：请只返回有效的JSON数据，不要包含任何解释、注释、说明文字或代码块标记。直接返回纯JSON格式的数据。"""
+
 # ml_analyzer.py 中的 prompt
 ML_ANALYZER_REPLAY_MEMORY_SYSTEM_PROMPT = """
 你是一个人格提炼专家。你的任务是分析以下消息记录，并结合当前人格描述，提炼出新的、更丰富的人格特征和对话风格。

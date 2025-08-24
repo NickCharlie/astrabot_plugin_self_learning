@@ -104,7 +104,7 @@ class IntelligentResponder:
         """生成自学习可能需要用到的的智能回复文本（修改版 - 增量更新在SYSTEM_PROMPT中）"""
         try:
             sender_id = event.get_sender_id()
-            group_id = event.get_group_id()
+            group_id = event.get_group_id() or event.get_sender_id()  # 私聊时使用 sender_id 作为会话 ID
             message_text = event.get_message_str()
             
             # 收集上下文信息
@@ -154,7 +154,7 @@ class IntelligentResponder:
         """生成智能回复参数，用于传递给框架的request_llm"""
         try:
             sender_id = event.get_sender_id()
-            group_id = event.get_group_id()
+            group_id = event.get_group_id() or event.get_sender_id()  # 私聊时使用 sender_id 作为会话 ID
             message_text = event.get_message_str()
             
             # 收集上下文信息

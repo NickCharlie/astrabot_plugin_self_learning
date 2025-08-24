@@ -472,7 +472,7 @@ class MultidimensionalAnalyzer:
             
             sender_id = event.get_sender_id()
             sender_name = event.get_sender_name()
-            group_id = event.get_group_id()
+            group_id = event.get_group_id() or event.get_sender_id()  # 私聊时使用 sender_id 作为会话 ID
             
             # 预先清理user_profiles中的任何问题数据
             self._clean_user_profiles()
@@ -839,7 +839,7 @@ class MultidimensionalAnalyzer:
         """分析社交关系上下文"""
         try:
             sender_id = event.get_sender_id()
-            group_id = event.get_group_id()
+            group_id = event.get_group_id() or event.get_sender_id()  # 私聊时使用 sender_id 作为会话 ID
             
             social_context = {
                 'mentions': [],

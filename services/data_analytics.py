@@ -5,6 +5,7 @@ import os
 import json
 import asyncio
 import time
+import jieba
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Any, Tuple
@@ -323,7 +324,7 @@ class DataAnalyticsService(AsyncServiceBase):
             topic_counts = defaultdict(int)
             daily_topics = defaultdict(lambda: defaultdict(int))
             
-            import jieba
+        
             stopwords = {'的', '了', '是', '在', '我', '你', '他', '她', '它', '这', '那', '和', '与', '及'}
             
             for msg in messages:
@@ -500,6 +501,170 @@ class DataAnalyticsService(AsyncServiceBase):
         except Exception as e:
             self._logger.error(f"生成综合分析报告失败: {e}")
             return {"error": str(e)}
+    
+    async def analyze_user_behavior_patterns(self, group_id: str, days: int = 30) -> Dict[str, Any]:
+        """分析用户行为模式"""
+        cache_key = f"user_behavior_patterns_{group_id}_{days}"
+        if self._is_cache_valid(cache_key):
+            return self.analytics_cache[cache_key]
+        
+        try:
+            # 获取用户消息数据
+            messages = await self.db_ext.get_messages_by_timerange(
+                group_id, 
+                datetime.now() - timedelta(days=days),
+                datetime.now()
+            )
+            
+            if not messages:
+                return {
+                    "user_patterns": {},
+                    "common_topics": [],
+                    "dominant_emotion": "中性",
+                    "recommendations": "暂无足够数据进行分析"
+                }
+            
+            # 分析用户活跃模式
+            user_patterns = {}
+            topic_counts = defaultdict(int)
+            emotion_indicators = {
+                "positive": 0, "negative": 0, "neutral": 0,
+                "excited": 0, "calm": 0, "active": 0
+            }
+            
+            # 统计用户消息模式
+            user_message_counts = defaultdict(int)
+            user_message_lengths = defaultdict(list)
+            
+            stopwords = {'的', '了', '是', '在', '我', '你', '他', '她', '它', '这', '那', '和', '与', '及'}
+            
+            for msg in messages:
+                sender_id = msg.get('sender_id', '')
+                content = msg.get('message', '')
+                timestamp = msg.get('timestamp', time.time())
+                
+                # 统计用户消息数量和长度
+                user_message_counts[sender_id] += 1
+                user_message_lengths[sender_id].append(len(content))
+                
+                # 分词提取话题
+                words = jieba.lcut(content)
+                for word in words:
+                    if len(word) > 1 and word not in stopwords:
+                        topic_counts[word] += 1
+                
+                # 简单的情感分析
+                positive_words = ['好', '棒', '赞', '喜欢', '开心', '高兴', '哈哈', '笑', '爱']
+                negative_words = ['不好', '差', '糟', '讨厌', '难过', '生气', '烦', '恨']
+                excited_words = ['太', '超', '非常', '特别', '极', '！', '!']
+                
+                content_lower = content.lower()
+                
+                for word in positive_words:
+                    if word in content:
+                        emotion_indicators["positive"] += 1
+                        break
+                        
+                for word in negative_words:
+                    if word in content:
+                        emotion_indicators["negative"] += 1
+                        break
+                        
+                for word in excited_words:
+                    if word in content:
+                        emotion_indicators["excited"] += 1
+                        break
+                
+                if len(content) > 20:
+                    emotion_indicators["active"] += 1
+                elif len(content) < 5:
+                    emotion_indicators["calm"] += 1
+                else:
+                    emotion_indicators["neutral"] += 1
+            
+            # 构建用户行为模式
+            for user_id, msg_count in user_message_counts.items():
+                avg_length = np.mean(user_message_lengths[user_id]) if user_message_lengths[user_id] else 0
+                user_patterns[user_id] = {
+                    "message_count": msg_count,
+                    "avg_message_length": round(avg_length, 2),
+                    "activity_level": "高" if msg_count > len(messages) * 0.3 else "中" if msg_count > len(messages) * 0.1 else "低",
+                    "communication_style": "详细" if avg_length > 50 else "简洁" if avg_length < 15 else "适中"
+                }
+            
+            # 获取最常见话题
+            common_topics = [topic for topic, count in sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)[:10]]
+            
+            # 确定主导情绪
+            dominant_emotion = max(emotion_indicators.items(), key=lambda x: x[1])[0]
+            emotion_map = {
+                "positive": "积极",
+                "negative": "消极", 
+                "neutral": "中性",
+                "excited": "兴奋",
+                "calm": "平静",
+                "active": "活跃"
+            }
+            dominant_emotion_zh = emotion_map.get(dominant_emotion, "中性")
+            
+            # 生成建议
+            recommendations = self._generate_behavior_recommendations(user_patterns, emotion_indicators, len(messages))
+            
+            result = {
+                "user_patterns": user_patterns,
+                "common_topics": common_topics,
+                "dominant_emotion": dominant_emotion_zh,
+                "recommendations": recommendations,
+                "total_messages": len(messages),
+                "active_users": len(user_patterns),
+                "emotion_distribution": emotion_indicators
+            }
+            
+            self.analytics_cache[cache_key] = result
+            return result
+            
+        except Exception as e:
+            self._logger.error(f"分析用户行为模式失败: {e}")
+            return {
+                "user_patterns": {},
+                "common_topics": [],
+                "dominant_emotion": "中性",
+                "recommendations": "分析过程中出现错误",
+                "total_messages": 0,
+                "active_users": 0
+            }
+    
+    def _generate_behavior_recommendations(self, user_patterns: Dict, emotion_indicators: Dict, total_messages: int) -> str:
+        """基于行为模式生成建议"""
+        try:
+            recommendations = []
+            
+            # 基于用户活跃度的建议
+            active_users = sum(1 for pattern in user_patterns.values() if pattern["activity_level"] == "高")
+            if active_users > len(user_patterns) * 0.5:
+                recommendations.append("群聊活跃度很高，可以考虑更频繁的学习更新")
+            elif active_users < len(user_patterns) * 0.2:
+                recommendations.append("群聊活跃度较低，建议优化互动策略")
+            
+            # 基于情绪分布的建议
+            positive_ratio = emotion_indicators.get("positive", 0) / max(total_messages, 1)
+            if positive_ratio > 0.6:
+                recommendations.append("群聊氛围积极，可以保持当前的交流风格")
+            elif positive_ratio < 0.3:
+                recommendations.append("群聊氛围需要改善，建议增加正面互动")
+            
+            # 基于消息长度的建议
+            detailed_users = sum(1 for pattern in user_patterns.values() if pattern["communication_style"] == "详细")
+            if detailed_users > len(user_patterns) * 0.5:
+                recommendations.append("用户偏好详细交流，可以提供更丰富的回复内容")
+            else:
+                recommendations.append("用户偏好简洁交流，建议保持回复简明扼要")
+            
+            return "；".join(recommendations) if recommendations else "继续保持当前学习模式"
+            
+        except Exception as e:
+            self._logger.error(f"生成行为建议失败: {e}")
+            return "继续保持当前学习模式"
     
     def _is_cache_valid(self, cache_key: str) -> bool:
         """检查缓存是否有效"""

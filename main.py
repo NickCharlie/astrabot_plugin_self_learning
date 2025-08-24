@@ -38,7 +38,7 @@ class LearningStats:
     last_persona_update: Optional[str] = None
 
 
-@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.2.1", "https://github.com/NickCharlie/astrbot_plugin_self_learning")
+@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.2.2", "https://github.com/NickCharlie/astrbot_plugin_self_learning")
 class SelfLearningPlugin(star.Star):
     """AstrBot 自学习插件 - 智能学习用户对话风格并优化人格设置"""
 
@@ -78,6 +78,10 @@ class SelfLearningPlugin(star.Star):
         
         # 学习统计
         self.learning_stats = LearningStats()
+        
+        # 消息去重缓存 - 防止合并消息插件导致的重复处理
+        self.message_dedup_cache = {}
+        self.max_cache_size = 1000
         
         # 初始化服务层
         self._initialize_services()
@@ -145,6 +149,9 @@ class SelfLearningPlugin(star.Star):
             
             # 创建临时人格更新器
             self.temporary_persona_updater = self.service_factory.create_temporary_persona_updater()
+            
+            # 创建并保存LLM适配器实例，用于状态报告
+            self.llm_adapter = self.service_factory.create_framework_llm_adapter()
             
             # 初始化内部组件
             self._setup_internal_components()
@@ -478,7 +485,7 @@ class SelfLearningPlugin(star.Star):
         return bool(re.match(pattern, message_text.strip(), re.IGNORECASE))
 
     @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(self, event: AstrMessageEvent):
+    async def on_message(self, event: AstrMessageEvent, priority = -6):
         """监听所有消息，收集用户对话数据"""
         
         # 检查是否启用消息抓取
@@ -486,20 +493,20 @@ class SelfLearningPlugin(star.Star):
             return
             
         try:
+            # 获取消息文本并立即检查是否为命令
+            message_text = event.get_message_str()
+            if not message_text or len(message_text.strip()) == 0:
+                return
+            
+            # 过滤插件命令 - 在所有处理之前立即过滤
+            if self._is_plugin_command(message_text):
+                return
+            
             group_id = event.get_group_id() or event.get_sender_id() # 使用群组ID或发送者ID作为会话ID
             sender_id = event.get_sender_id()
             
             # QQ号过滤
             if not self.qq_filter.should_collect_message(sender_id):
-                return
-                
-            # 获取消息文本
-            message_text = event.get_message_str()
-            if not message_text or len(message_text.strip()) == 0:
-                return
-            
-            # 过滤插件命令 - 避免命令被当作聊天消息处理
-            if self._is_plugin_command(message_text):
                 return
             
             # 优先更新增量内容 - 每收到消息都立即执行
@@ -747,12 +754,13 @@ class SelfLearningPlugin(star.Star):
                     refine_model='未配置框架Provider'
                 )
             
-            # 学习统计
+            # 学习统计 - 安全处理嵌套的None值
+            current_session = learning_status.get('current_session') or {}
             status_info += CommandMessages.STATUS_LEARNING_STATS.format(
                 total_messages=collector_stats.get('total_messages', 0),
                 filtered_messages=collector_stats.get('filtered_messages', 0),
-                style_updates=learning_status.get('current_session', {}).get('style_updates', 0),
-                last_learning_time=learning_status.get('current_session', {}).get('end_time', CommandMessages.STATUS_NEVER_EXECUTED)
+                style_updates=current_session.get('style_updates', 0),
+                last_learning_time=current_session.get('end_time', CommandMessages.STATUS_NEVER_EXECUTED)
             )
             
             # 存储统计
@@ -779,10 +787,22 @@ class SelfLearningPlugin(star.Star):
         try:
             group_id = event.get_group_id() or event.get_sender_id()
             
-            if await self.progressive_learning.start_learning(group_id):
-                yield event.plain_result(CommandMessages.LEARNING_STARTED.format(group_id=group_id))
-            else:
-                yield event.plain_result(CommandMessages.LEARNING_RUNNING.format(group_id=group_id))
+            # 检查是否有足够的消息进行学习
+            stats = await self.message_collector.get_statistics(group_id)
+            unprocessed_count = stats.get('unprocessed_messages', 0)
+            
+            if unprocessed_count < self.plugin_config.min_messages_for_learning:
+                yield event.plain_result(f"❌ 未处理消息数量不足（{unprocessed_count}/{self.plugin_config.min_messages_for_learning}），无法开始学习")
+                return
+            
+            # 执行一次学习批次而不是启动持续循环
+            yield event.plain_result(f"🔄 开始执行学习批次，处理 {unprocessed_count} 条未处理消息...")
+            
+            try:
+                await self.progressive_learning._execute_learning_batch(group_id)
+                yield event.plain_result(f"✅ 学习批次执行完成")
+            except Exception as batch_error:
+                yield event.plain_result(f"❌ 学习批次执行失败: {str(batch_error)}")
             
         except Exception as e:
             logger.error(CommandMessages.ERROR_START_LEARNING.format(error=e), exc_info=True)

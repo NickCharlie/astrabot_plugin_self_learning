@@ -63,8 +63,8 @@ class LightweightMLAnalyzer:
         """
         强化学习记忆重放：通过强化模型分析历史数据和新数据的关联性，优化学习策略
         """
-        if not self.llm_adapter or not self.llm_adapter.has_reinforce_provider():
-            logger.warning("强化模型LLM适配器未配置，无法执行强化学习记忆重放。")
+        if not self.llm_adapter or not self.llm_adapter.has_reinforce_provider() and self.llm_adapter.providers_configured < 3:
+            logger.warning("强化模型未配置，跳过强化学习记忆重放功能")
             return {}
 
         try:
@@ -129,8 +129,8 @@ class LightweightMLAnalyzer:
         """
         强化学习增量微调：通过强化模型智能融合基础人格和增量更新
         """
-        if not self.llm_adapter or not self.llm_adapter.has_reinforce_provider():
-            logger.warning("强化模型LLM适配器未配置，无法执行增量微调。")
+        if (not self.llm_adapter or not self.llm_adapter.has_reinforce_provider()) and self.llm_adapter.providers_configured < 3:
+            logger.warning("强化模型未配置，跳过增量微调功能")
             return {}
 
         try:
@@ -179,8 +179,8 @@ class LightweightMLAnalyzer:
         """
         强化学习策略优化：基于历史表现数据动态调整学习策略
         """
-        if not self.llm_adapter or not self.llm_adapter.has_reinforce_provider():
-            logger.warning("强化模型LLM适配器未配置，无法执行策略优化。")
+        if (not self.llm_adapter or not self.llm_adapter.has_reinforce_provider())  and self.llm_adapter.providers_configured < 3:
+            logger.warning("强化模型未配置，跳过策略优化功能")
             return {}
 
         try:
@@ -275,8 +275,8 @@ class LightweightMLAnalyzer:
         记忆重放：将历史数据与新数据混合，并交给提炼模型进行处理。
         这模拟了LLM的"增量微调"过程，通过重新暴露历史数据来巩固学习。
         """
-        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
-            logger.warning("提炼模型LLM适配器未配置，无法执行记忆重放。")
+        if (not self.llm_adapter or not self.llm_adapter.has_refine_provider())  and self.llm_adapter.providers_configured < 2:
+            logger.warning("提炼模型未配置，跳过记忆重放功能")
             return []
 
         try:
@@ -759,8 +759,8 @@ class LightweightMLAnalyzer:
 
     async def _analyze_sentiment_with_llm(self, messages: List[Dict[str, Any]]) -> Dict[str, float]:
         """使用LLM对消息列表进行情感分析"""
-        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
-            logger.warning("提炼模型LLM适配器未配置，无法使用LLM进行情感分析，使用简化算法。")
+        if (not self.llm_adapter or not self.llm_adapter.has_refine_provider()) and self.llm_adapter.providers_configured < 2:
+            logger.warning("提炼模型未配置，无法进行LLM情感分析，使用简化算法")
             return self._simple_sentiment_analysis(messages)
 
         messages_text = "\n".join([msg['message'] for msg in messages])

@@ -514,7 +514,7 @@ class ProgressiveLearningService:
             if hasattr(self.multidimensional_analyzer, 'llm_adapter') and self.multidimensional_analyzer.llm_adapter:
                 llm_adapter = self.multidimensional_analyzer.llm_adapter
                 
-                if llm_adapter.has_refine_provider():
+                if llm_adapter.has_refine_provider() and self.llm_adapter.providers_configured >= 2:
                     # 准备输入数据
                     current_persona_json = json.dumps(current_persona, ensure_ascii=False, indent=2)
                     style_analysis_json = json.dumps(style_analysis, ensure_ascii=False, indent=2)

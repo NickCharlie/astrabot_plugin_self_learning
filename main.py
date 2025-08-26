@@ -38,7 +38,7 @@ class LearningStats:
     last_persona_update: Optional[str] = None
 
 
-@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.2.2", "https://github.com/NickCharlie/astrbot_plugin_self_learning")
+@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.2.3", "https://github.com/NickCharlie/astrbot_plugin_self_learning")
 class SelfLearningPlugin(star.Star):
     """AstrBot 自学习插件 - 智能学习用户对话风格并优化人格设置"""
 
@@ -473,16 +473,22 @@ class SelfLearningPlugin(star.Star):
             'clean_duplicate_content'
         ]
         
-        # 创建命令的正则表达式模式
-        # 匹配: [任意单个字符][命令名][可选的空格和参数]
-        # ^.{1} : 开头任意一个字符（命令前缀）
-        # (命令1|命令2|...) : 匹配任一插件命令
-        # (\s.*)?$ : 可选的空格和参数，到字符串结尾
+        # 去除首尾空白
+        message_text = message_text.strip()
+        
+        # 方案1: 检查带前缀的命令
+        # 创建命令的正则表达式模式 - 匹配: [任意单个字符][命令名][可选的空格和参数]
         commands_pattern = '|'.join(re.escape(cmd) for cmd in plugin_commands)
-        pattern = rf'^.{{1}}({commands_pattern})(\s.*)?$'
+        pattern_with_prefix = rf'^.{{1}}({commands_pattern})(\s.*)?$'
+        
+        # 方案2: 检查不带前缀的命令（被AstrBot框架处理后的）
+        # 直接匹配命令名，可能带参数
+        pattern_without_prefix = rf'^({commands_pattern})(\s.*)?$'
         
         # 使用正则表达式匹配，忽略大小写
-        return bool(re.match(pattern, message_text.strip(), re.IGNORECASE))
+        # 如果匹配任一模式，都认为是插件命令
+        return bool(re.match(pattern_with_prefix, message_text, re.IGNORECASE)) or \
+               bool(re.match(pattern_without_prefix, message_text, re.IGNORECASE))
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent, priority = -6):
@@ -500,6 +506,7 @@ class SelfLearningPlugin(star.Star):
             
             # 过滤插件命令 - 在所有处理之前立即过滤
             if self._is_plugin_command(message_text):
+                logger.debug(f"检测到插件命令，跳过消息收集: {message_text}")
                 return
             
             group_id = event.get_group_id() or event.get_sender_id() # 使用群组ID或发送者ID作为会话ID
@@ -825,7 +832,7 @@ class SelfLearningPlugin(star.Star):
             logger.error(CommandMessages.ERROR_STOP_LEARNING.format(error=e), exc_info=True)
             yield event.plain_result(CommandMessages.STOP_FAILED.format(error=str(e)))
 
-    @filter.command("force_learning")  
+    @filter.command("force_learning")
     @filter.permission_type(PermissionType.ADMIN)
     async def force_learning_command(self, event: AstrMessageEvent):
         """强制执行一次学习周期"""
@@ -1057,6 +1064,7 @@ class SelfLearningPlugin(star.Star):
             yield event.plain_result(CommandMessages.ERROR_ANALYTICS_REPORT.format(error=str(e)))
 
     @filter.command("persona_switch")
+    @filter.permission_type(PermissionType.ADMIN)
     async def persona_switch_command(self, event: AstrMessageEvent):
         """切换人格模式"""
         try:

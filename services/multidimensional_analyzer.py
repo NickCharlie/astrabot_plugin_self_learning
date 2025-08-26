@@ -87,16 +87,16 @@ class MultidimensionalAnalyzer:
         # 使用框架适配器
         self.llm_adapter = llm_adapter
 
-        # 检查配置完整性
+        # 友好的配置状态提示
         if self.llm_adapter:
             if not self.llm_adapter.has_filter_provider():
-                logger.warning("筛选模型Provider未配置。将无法使用LLM进行消息筛选。")
+                logger.info("💡 筛选模型未配置，将使用简化算法进行消息筛选")
             if not self.llm_adapter.has_refine_provider():
-                logger.warning("提炼模型Provider未配置。将无法使用LLM进行深度分析。")
+                logger.info("💡 提炼模型未配置，将使用简化算法进行深度分析")
             if not self.llm_adapter.has_reinforce_provider():
-                logger.warning("强化模型Provider未配置。将无法使用LLM进行强化学习。")
+                logger.info("💡 强化模型未配置，将跳过强化学习功能")
         else:
-            logger.warning("框架LLM适配器未配置。将无法使用LLM进行高级分析。")
+            logger.info("💡 框架LLM适配器未配置，将使用简化算法进行分析")
         
         # 用户画像存储
         self.user_profiles: Dict[str, UserProfile] = {}
@@ -281,7 +281,7 @@ class MultidimensionalAnalyzer:
         返回 True 表示消息通过筛选，False 表示不通过。
         """
         # 使用框架适配器
-        if self.llm_adapter and self.llm_adapter.has_filter_provider():
+        if self.llm_adapter and self.llm_adapter.has_filter_provider() and self.llm_adapter.providers_configured > 0:
             prompt = self.prompts.MULTIDIMENSIONAL_ANALYZER_FILTER_MESSAGE_PROMPT.format(
                 current_persona_description=current_persona_description,
                 message_text=message_text
@@ -304,7 +304,7 @@ class MultidimensionalAnalyzer:
                 logger.error(f"LLM消息筛选失败: {e}")
                 return False
         else:
-            logger.warning("筛选模型未配置，跳过LLM消息筛选。")
+            logger.warning("筛选模型未配置，无法进行LLM消息筛选，跳过此步骤")
             return True
 
     async def evaluate_message_quality_with_llm(self, message_text: str, current_persona_description: str) -> Dict[str, float]:
@@ -322,7 +322,7 @@ class MultidimensionalAnalyzer:
         }
 
         # 优先使用框架适配器
-        if self.llm_adapter and self.llm_adapter.has_refine_provider():
+        if self.llm_adapter and self.llm_adapter.has_refine_provider() and self.llm_adapter.providers_configured >= 2:
             prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_EVALUATE_MESSAGE_QUALITY_PROMPT.format(
                 current_persona_description=current_persona_description,
                 message_text=message_text
@@ -346,7 +346,7 @@ class MultidimensionalAnalyzer:
                 logger.error(f"LLM多维度评分失败: {e}")
                 return default_scores
         else:
-            logger.warning("提炼模型未配置，返回默认评分。")
+            logger.warning("提炼模型未配置，无法进行消息质量评分，返回默认评分")
             return default_scores
 
     def _debug_dict_keys(self, data: Dict, context_name: str = "") -> Dict:
@@ -901,7 +901,7 @@ class MultidimensionalAnalyzer:
     async def _analyze_emotional_context(self, message_text: str) -> Dict[str, float]:
         """使用LLM分析情感上下文"""
         # 优先使用框架适配器
-        if self.llm_adapter and self.llm_adapter.has_refine_provider():
+        if self.llm_adapter and self.llm_adapter.has_refine_provider() and self.llm_adapter.providers_configured >= 2:
             prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
                 message_text=message_text
             )
@@ -933,7 +933,7 @@ class MultidimensionalAnalyzer:
                 return self._simple_emotional_analysis(message_text)
         
         # 使用框架适配器进行情感上下文分析
-        elif self.llm_adapter and self.llm_adapter.has_refine_provider():
+        elif self.llm_adapter and self.llm_adapter.has_refine_provider() and self.llm_adapter.providers_configured >= 2:
             prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
                 message_text=message_text
             )
@@ -967,7 +967,7 @@ class MultidimensionalAnalyzer:
                 logger.error(f"LLM情感分析失败: {e}")
                 return self._simple_emotional_analysis(message_text)
         else:
-            logger.warning("提炼模型未配置，使用简化情感分析算法。")
+            logger.warning("提炼模型未配置，无法进行LLM情感分析，使用简化算法")
             return self._simple_emotional_analysis(message_text)
         
     def _simple_emotional_analysis(self, message_text: str) -> Dict[str, float]:
@@ -1205,7 +1205,7 @@ class MultidimensionalAnalyzer:
             0-1之间的评分。
         """
         # 检查适配器和refine provider是否可用
-        if not self.llm_adapter or not self.llm_adapter.has_refine_provider():
+        if not self.llm_adapter or not self.llm_adapter.has_refine_provider() or self.llm_adapter.providers_configured < 2:
             logger.warning(f"提炼模型LLM客户端未初始化，无法使用LLM计算{analysis_name}，使用简化算法。")
             return fallback_function(text)
 

@@ -16,15 +16,19 @@ class FrameworkLLMAdapter:
         self.filter_provider: Optional[Provider] = None
         self.refine_provider: Optional[Provider] = None  
         self.reinforce_provider: Optional[Provider] = None
+        self.providers_configured = 0
         
     def initialize_providers(self, config):
         """根据配置初始化Provider"""
+        self.providers_configured = 0
+        
         if config.filter_provider_id:
             self.filter_provider = self.context.get_provider_by_id(config.filter_provider_id)
             if not self.filter_provider:
                 logger.warning(f"找不到筛选Provider: {config.filter_provider_id}")
             else:
                 logger.info(f"筛选Provider已配置: {config.filter_provider_id}")
+                self.providers_configured += 1
                 
         if config.refine_provider_id:
             self.refine_provider = self.context.get_provider_by_id(config.refine_provider_id)
@@ -32,6 +36,7 @@ class FrameworkLLMAdapter:
                 logger.warning(f"找不到提炼Provider: {config.refine_provider_id}")
             else:
                 logger.info(f"提炼Provider已配置: {config.refine_provider_id}")
+                self.providers_configured += 1
                 
         if config.reinforce_provider_id:
             self.reinforce_provider = self.context.get_provider_by_id(config.reinforce_provider_id)
@@ -39,6 +44,13 @@ class FrameworkLLMAdapter:
                 logger.warning(f"找不到强化Provider: {config.reinforce_provider_id}")
             else:
                 logger.info(f"强化Provider已配置: {config.reinforce_provider_id}")
+                self.providers_configured += 1
+        
+        # 友好的配置状态提示
+        if self.providers_configured == 0:
+            logger.info("💡 提示：暂未配置任何AI模型Provider。插件将使用简化算法运行，如需完整功能请在插件配置中设置模型Provider ID。")
+        elif self.providers_configured < 3:
+            logger.info(f"ℹ️ 已配置 {self.providers_configured}/3 个AI模型Provider。部分高级功能可能使用简化算法。")
     
     async def filter_chat_completion(
         self,

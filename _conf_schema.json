@@ -39,7 +39,7 @@
         "description": "目标QQ号列表",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "指定要学习的QQ号列表。为空则学习所有用户消息。支持群号和个人QQ号",
+        "hint": "指定要学习的QQ号列表。为空则学习所有用户消息。支持个人QQ号",
         "default": []
       },
       "current_persona_name": {

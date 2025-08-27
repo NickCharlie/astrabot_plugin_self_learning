@@ -33,11 +33,12 @@ class IntelligentResponder:
     
     def __init__(self, config: PluginConfig, context: Context, db_manager, 
                  llm_adapter: Optional[FrameworkLLMAdapter] = None,
-                 prompts: Any = None):
+                 prompts: Any = None, affection_manager = None):
         self.config = config
         self.context = context
         self.db_manager = db_manager
         self.prompts = prompts
+        self.affection_manager = affection_manager  # 添加好感度管理器
         
         # 使用框架适配器
         self.llm_adapter = llm_adapter
@@ -183,6 +184,7 @@ class IntelligentResponder:
     async def _collect_context_info(self, group_id: str, sender_id: str, message: str) -> Dict[str, Any]:
         """收集上下文信息"""
         context_info = {
+            'group_id': group_id,  # 添加group_id字段
             'sender_id': sender_id,  # 添加sender_id字段
             'sender_profile': None,
             'user_affection': None,
@@ -249,8 +251,23 @@ class IntelligentResponder:
             # 3. 构建用户上下文增强信息
             context_enhancement = await self._build_context_enhancement(context_info)
             
-            # 4. 组合最终的系统提示词: 原有PROMPT + 增量更新 + 上下文增强
-            enhanced_prompt = base_system_prompt
+            # 4. 集成心情信息（如果好感度管理器可用）
+            mood_enhanced_prompt = base_system_prompt
+            if self.affection_manager:
+                try:
+                    # 从context_info获取group_id
+                    group_id = context_info.get('group_id')
+                    if group_id:
+                        mood_enhanced_prompt = await self.affection_manager.get_mood_influenced_system_prompt(
+                            group_id, base_system_prompt
+                        )
+                        logger.debug(f"心情系统已应用到系统提示词: {group_id}")
+                except Exception as e:
+                    logger.warning(f"应用心情系统提示词失败: {e}")
+                    mood_enhanced_prompt = base_system_prompt
+            
+            # 5. 组合最终的系统提示词: 心情增强PROMPT + 增量更新 + 上下文增强
+            enhanced_prompt = mood_enhanced_prompt
             
             if incremental_updates:
                 enhanced_prompt += f"\n\n{incremental_updates}"

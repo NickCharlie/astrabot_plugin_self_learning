@@ -584,6 +584,30 @@ class MultidimensionalAnalyzer:
         try:
             logger.debug(f"批量分析消息: 发送者={sender_id}, 群组={group_id}, 消息长度={len(message_text)}")
             
+            # 添加批量分析计数器和限制
+            if not hasattr(self, '_batch_analysis_count'):
+                self._batch_analysis_count = {}
+                self._batch_analysis_start_time = time.time()
+            
+            # 重置计数器（每小时重置一次）
+            if time.time() - self._batch_analysis_start_time > 3600:
+                self._batch_analysis_count = {}
+                self._batch_analysis_start_time = time.time()
+            
+            # 检查是否超过批量分析限制（每小时最多100次LLM调用）
+            current_time = time.time()
+            hour_key = int(current_time // 3600)
+            
+            if hour_key not in self._batch_analysis_count:
+                self._batch_analysis_count[hour_key] = 0
+            
+            if self._batch_analysis_count[hour_key] >= 100:
+                logger.warning("批量分析达到限制，使用简化分析")
+                return await self._analyze_message_context_without_event(message_text)
+            
+            # 增加分析计数
+            self._batch_analysis_count[hour_key] += 1
+            
             # 更新用户画像（如果有足够信息）
             if sender_id and group_id:
                 await self._update_user_profile_batch(group_id, sender_id, sender_name, message_text, timestamp)
@@ -591,11 +615,20 @@ class MultidimensionalAnalyzer:
             # 分析话题偏好
             topic_context = await self._analyze_topic_context(message_text)
             
-            # 分析情感倾向
+            # 分析情感倾向（已有缓存机制）
             emotional_context = await self._analyze_emotional_context(message_text)
             
-            # 分析沟通风格
-            style_context = await self._analyze_communication_style(message_text)
+            # 分析沟通风格（添加限制）
+            style_context = {}
+            if self._batch_analysis_count[hour_key] <= 50:  # 限制风格分析的调用次数
+                style_context = await self._analyze_communication_style(message_text)
+            else:
+                # 使用简化的风格分析
+                style_context = {
+                    'length_preference': len(message_text),
+                    'emoji_usage': self._calculate_emoji_usage(message_text),
+                    'punctuation_style': self._calculate_punctuation_style(message_text)
+                }
             
             # 计算相关性得分
             contextual_relevance = await self._calculate_enhanced_relevance(
@@ -900,40 +933,16 @@ class MultidimensionalAnalyzer:
 
     async def _analyze_emotional_context(self, message_text: str) -> Dict[str, float]:
         """使用LLM分析情感上下文"""
+        # 检查缓存，避免重复分析相同内容
+        cache_key = f"emotion_cache_{hash(message_text)}"
+        if hasattr(self, '_analysis_cache') and cache_key in self._analysis_cache:
+            cached_result = self._analysis_cache[cache_key]
+            if time.time() - cached_result.get('timestamp', 0) < 300:  # 5分钟缓存
+                logger.debug(f"使用缓存的情感分析结果")
+                return cached_result.get('result', self._simple_emotional_analysis(message_text))
+        
         # 优先使用框架适配器
         if self.llm_adapter and self.llm_adapter.has_refine_provider() and self.llm_adapter.providers_configured >= 2:
-            prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
-                message_text=message_text
-            )
-            try:
-                response = await self.llm_adapter.refine_chat_completion(prompt=prompt)
-                
-                if response:
-                    # 使用安全的JSON解析方法
-                    emotion_scores = safe_parse_llm_json(
-                        response, 
-                        fallback_result=self._simple_emotional_analysis(message_text)
-                    )
-                    
-                    if emotion_scores and isinstance(emotion_scores, dict):
-                        # 确保所有分数都在0-1之间
-                        for key, value in emotion_scores.items():
-                            emotion_scores[key] = max(0.0, min(float(value), 1.0))
-                        logger.debug(f"情感上下文分析结果: {emotion_scores}")
-                        return emotion_scores
-                    else:
-                        logger.warning(f"LLM情感分析返回格式不正确，使用简化算法")
-                        return self._simple_emotional_analysis(message_text)
-                else:
-                    logger.warning(f"LLM情感分析未返回有效结果，使用简化算法")
-                    return self._simple_emotional_analysis(message_text)
-                    
-            except Exception as e:
-                logger.error(f"LLM情感分析失败: {e}")
-                return self._simple_emotional_analysis(message_text)
-        
-        # 使用框架适配器进行情感上下文分析
-        elif self.llm_adapter and self.llm_adapter.has_refine_provider() and self.llm_adapter.providers_configured >= 2:
             prompt = self.prompts.JSON_ONLY_SYSTEM_PROMPT + "\n\n" + self.prompts.MULTIDIMENSIONAL_ANALYZER_EMOTIONAL_CONTEXT_PROMPT.format(
                 message_text=message_text
             )
@@ -954,6 +963,15 @@ class MultidimensionalAnalyzer:
                         # 确保所有分数都在0-1之间
                         for key, value in emotion_scores.items():
                             emotion_scores[key] = max(0.0, min(float(value), 1.0))
+                        
+                        # 缓存结果
+                        if not hasattr(self, '_analysis_cache'):
+                            self._analysis_cache = {}
+                        self._analysis_cache[cache_key] = {
+                            'result': emotion_scores,
+                            'timestamp': time.time()
+                        }
+                        
                         logger.debug(f"情感上下文分析结果: {emotion_scores}")
                         return emotion_scores
                     else:
@@ -1010,20 +1028,55 @@ class MultidimensionalAnalyzer:
         return time_context
 
     async def _analyze_communication_style(self, message_text: str) -> Dict[str, float]:
-        """分析沟通风格"""
+        """分析沟通风格（优化版，减少LLM调用）"""
         try:
+            # 检查缓存
+            cache_key = f"style_cache_{hash(message_text)}"
+            if hasattr(self, '_analysis_cache') and cache_key in self._analysis_cache:
+                cached_result = self._analysis_cache[cache_key]
+                if time.time() - cached_result.get('timestamp', 0) < 600:  # 10分钟缓存
+                    logger.debug(f"使用缓存的风格分析结果")
+                    return cached_result.get('result', {})
+            
+            # 优化：优先使用简化计算，减少LLM调用
             style_features = {
-                'formal_level': await self._calculate_formal_level(message_text),
-                'enthusiasm_level': await self._calculate_enthusiasm_level(message_text),
-                'question_tendency': await self._calculate_question_tendency(message_text),
+                'formal_level': self._simple_formal_level(message_text),
+                'enthusiasm_level': self._simple_enthusiasm_level(message_text),
+                'question_tendency': self._simple_question_tendency(message_text),
                 'emoji_usage': self._calculate_emoji_usage(message_text),
                 'length_preference': len(message_text),
                 'punctuation_style': self._calculate_punctuation_style(message_text)
             }
+            
+            # 只有在批量分析计数较低时才使用LLM增强分析
+            if (hasattr(self, '_batch_analysis_count') and 
+                any(count <= 20 for count in self._batch_analysis_count.values())):
+                # 选择性地使用LLM增强某些特征
+                try:
+                    style_features['formal_level'] = await self._calculate_formal_level(message_text)
+                except Exception as e:
+                    logger.debug(f"LLM正式程度分析失败，使用简化版本: {e}")
+            
+            # 缓存结果
+            if not hasattr(self, '_analysis_cache'):
+                self._analysis_cache = {}
+            self._analysis_cache[cache_key] = {
+                'result': style_features,
+                'timestamp': time.time()
+            }
+            
             return style_features
         except Exception as e:
             logger.error(f'分析沟通风格失败：{e}')
-            return {}
+            # 返回最基本的风格特征
+            return {
+                'formal_level': 0.5,
+                'enthusiasm_level': self._simple_enthusiasm_level(message_text),
+                'question_tendency': self._simple_question_tendency(message_text),
+                'emoji_usage': self._calculate_emoji_usage(message_text),
+                'length_preference': len(message_text),
+                'punctuation_style': self._calculate_punctuation_style(message_text)
+            }
 
     async def _extract_topics(self, message_text: str) -> List[str]:
         """提取消息话题"""

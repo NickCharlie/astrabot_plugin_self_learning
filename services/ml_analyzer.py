@@ -68,6 +68,21 @@ class LightweightMLAnalyzer:
             return {}
 
         try:
+            # 检查是否在学习流程中，避免在force_learning过程中重复调用
+            import inspect
+            current_frame = inspect.currentframe()
+            call_stack = []
+            frame = current_frame
+            while frame:
+                call_stack.append(frame.f_code.co_name)
+                frame = frame.f_back
+            
+            learning_methods = ['_execute_learning_batch', 'force_learning_command']
+            if any(method in call_stack for method in learning_methods):
+                logger.debug(f"检测到正在强制学习流程中，适度降低强化学习记忆重放的调用频率")
+                # 在学习流程中仍然执行，但减少复杂度
+                pass
+
             # 获取历史学习数据
             historical_data = await self.db_manager.get_learning_history_for_reinforcement(group_id, limit=50)
             
@@ -328,20 +343,35 @@ class LightweightMLAnalyzer:
                     # 将强化学习结果集成到system_prompt
                     if self.temporary_persona_updater:
                         try:
-                            # 准备学习洞察更新数据
-                            insights_data = {
-                                'learning_insights': {
-                                    'interaction_patterns': refined_data.get('interaction_patterns', '通过记忆重放发现的交互模式'),
-                                    'improvement_suggestions': refined_data.get('suggested_improvements', '基于历史消息的改进建议'),
-                                    'effective_strategies': refined_data.get('effective_responses', '有效的回复策略'),
-                                    'learning_focus': f"记忆重放学习 - 处理了{len(new_messages)}条历史消息"
-                                }
-                            }
+                            # 检查是否在强制学习过程中，避免无限循环
+                            # 通过检查调用栈来判断是否已经在学习流程中
+                            import inspect
+                            current_frame = inspect.currentframe()
+                            call_stack = []
+                            frame = current_frame
+                            while frame:
+                                call_stack.append(frame.f_code.co_name)
+                                frame = frame.f_back
                             
-                            await self.temporary_persona_updater.apply_comprehensive_update_to_system_prompt(
-                                group_id, insights_data
-                            )
-                            logger.info(f"成功将强化学习结果集成到system_prompt: {group_id}")
+                            # 如果调用栈中包含学习相关的方法，说明正在学习流程中，跳过system_prompt更新
+                            learning_methods = ['_execute_learning_batch', 'force_learning_command', '_apply_learning_updates']
+                            if any(method in call_stack for method in learning_methods):
+                                logger.debug(f"检测到正在学习流程中，跳过记忆重放的system_prompt集成以避免循环")
+                            else:
+                                # 准备学习洞察更新数据
+                                insights_data = {
+                                    'learning_insights': {
+                                        'interaction_patterns': refined_data.get('interaction_patterns', '通过记忆重放发现的交互模式'),
+                                        'improvement_suggestions': refined_data.get('suggested_improvements', '基于历史消息的改进建议'),
+                                        'effective_strategies': refined_data.get('effective_responses', '有效的回复策略'),
+                                        'learning_focus': f"记忆重放学习 - 处理了{len(new_messages)}条历史消息"
+                                    }
+                                }
+                                
+                                await self.temporary_persona_updater.apply_comprehensive_update_to_system_prompt(
+                                    group_id, insights_data
+                                )
+                                logger.info(f"成功将强化学习结果集成到system_prompt: {group_id}")
                             
                         except Exception as e:
                             logger.error(f"集成强化学习结果到system_prompt失败: {e}")

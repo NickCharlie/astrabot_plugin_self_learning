@@ -222,26 +222,38 @@ class ProgressiveLearningService:
             # 3. 获取当前人格设置 (针对特定群组)
             current_persona = await self._get_current_persona(group_id)
             
-            # 4. 【新增】强化学习记忆重放
+            # 4. 【新增】强化学习记忆重放 - 在force_learning中减少调用频率
             if self.config.enable_ml_analysis:
                 try:
-                    reinforcement_result = await self.ml_analyzer.reinforcement_memory_replay(
-                        group_id, filtered_messages, current_persona
-                    )
+                    # 检查是否为force_learning调用，如果是则跳过记忆重放避免无限循环
+                    import inspect
+                    current_frame = inspect.currentframe()
+                    call_stack = []
+                    frame = current_frame
+                    while frame:
+                        call_stack.append(frame.f_code.co_name)
+                        frame = frame.f_back
                     
-                    if reinforcement_result and reinforcement_result.get('optimization_strategy'):
-                        # 根据强化学习结果调整学习参数
-                        learning_weight = reinforcement_result.get('optimization_strategy', {}).get('learning_weight', 1.0)
-                        confidence_threshold = reinforcement_result.get('optimization_strategy', {}).get('confidence_threshold', self.config.confidence_threshold)
+                    if 'force_learning_command' in call_stack:
+                        logger.debug("force_learning中跳过强化学习记忆重放，避免无限循环")
+                    else:
+                        reinforcement_result = await self.ml_analyzer.reinforcement_memory_replay(
+                            group_id, filtered_messages, current_persona
+                        )
                         
-                        # 动态调整筛选阈值
-                        if confidence_threshold != self.config.confidence_threshold:
-                            logger.info(f"根据强化学习调整置信度阈值: {self.config.confidence_threshold} -> {confidence_threshold}")
-                            # 重新筛选消息（如果阈值提高了）
-                            if confidence_threshold > self.config.confidence_threshold:
-                                filtered_messages = [msg for msg in filtered_messages 
-                                                   if msg.get('relevance_score', 0) >= confidence_threshold]
-                                
+                        if reinforcement_result and reinforcement_result.get('optimization_strategy'):
+                            # 根据强化学习结果调整学习参数
+                            learning_weight = reinforcement_result.get('optimization_strategy', {}).get('learning_weight', 1.0)
+                            confidence_threshold = reinforcement_result.get('optimization_strategy', {}).get('confidence_threshold', self.config.confidence_threshold)
+                            
+                            # 动态调整筛选阈值
+                            if confidence_threshold != self.config.confidence_threshold:
+                                logger.info(f"根据强化学习调整置信度阈值: {self.config.confidence_threshold} -> {confidence_threshold}")
+                                # 重新筛选消息（如果阈值提高了）
+                                if confidence_threshold > self.config.confidence_threshold:
+                                    filtered_messages = [msg for msg in filtered_messages 
+                                                       if msg.get('relevance_score', 0) >= confidence_threshold]
+                                    
                 except Exception as e:
                     logger.error(f"强化学习记忆重放失败: {e}")
             
@@ -514,7 +526,7 @@ class ProgressiveLearningService:
             if hasattr(self.multidimensional_analyzer, 'llm_adapter') and self.multidimensional_analyzer.llm_adapter:
                 llm_adapter = self.multidimensional_analyzer.llm_adapter
                 
-                if llm_adapter.has_refine_provider() and self.llm_adapter.providers_configured >= 2:
+                if llm_adapter.has_refine_provider() and llm_adapter.providers_configured >= 2:
                     # 准备输入数据
                     current_persona_json = json.dumps(current_persona, ensure_ascii=False, indent=2)
                     style_analysis_json = json.dumps(style_analysis, ensure_ascii=False, indent=2)
@@ -640,8 +652,18 @@ class ProgressiveLearningService:
         """使用多维度分析进行智能筛选"""
         filtered = []
         
-        for message in messages:
+        # 添加批量处理限制，防止过度的LLM调用
+        max_messages_to_analyze = min(len(messages), 20)  # 限制每批最多分析20条消息
+        messages_to_process = messages[:max_messages_to_analyze]
+        
+        logger.info(f"开始筛选 {len(messages_to_process)} 条消息 (原始: {len(messages)} 条)")
+        
+        for i, message in enumerate(messages_to_process):
             try:
+                # 添加处理进度日志
+                if i % 5 == 0:
+                    logger.debug(f"筛选进度: {i+1}/{len(messages_to_process)}")
+                
                 # 使用专门的批量分析方法，不需要事件对象
                 context_analysis = await self.multidimensional_analyzer.analyze_message_batch(
                     message['message'],
@@ -673,6 +695,11 @@ class ProgressiveLearningService:
                 logger.warning(f"消息筛选失败: {e}")
                 continue
         
+        # 如果还有未处理的消息，记录日志
+        if len(messages) > max_messages_to_analyze:
+            logger.info(f"由于批量处理限制，跳过了 {len(messages) - max_messages_to_analyze} 条消息")
+        
+        logger.info(f"筛选完成: {len(filtered)} 条消息通过筛选")
         return filtered
 
     async def _get_current_persona(self, group_id: str) -> Dict[str, Any]:

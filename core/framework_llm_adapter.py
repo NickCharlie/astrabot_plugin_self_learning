@@ -60,7 +60,7 @@ class FrameworkLLMAdapter:
         **kwargs
     ) -> Optional[str]:
         """使用筛选模型进行对话补全"""
-        if (not self.filter_provider) and self.providers_configured >= 1:
+        if (not self.filter_provider) and self.providers_configured < 1:
             logger.error("筛选Provider未配置")
             return None
             
@@ -85,7 +85,7 @@ class FrameworkLLMAdapter:
         **kwargs
     ) -> Optional[str]:
         """使用提炼模型进行对话补全"""
-        if (not self.refine_provider) and self.providers_configured >= 2:
+        if (not self.refine_provider)  and self.providers_configured < 2:
             logger.error("提炼Provider未配置")
             return None
             
@@ -110,7 +110,7 @@ class FrameworkLLMAdapter:
         **kwargs
     ) -> Optional[str]:
         """使用强化模型进行对话补全"""
-        if (not self.reinforce_provider)  and self.providers_configured >= 3:
+        if (not self.reinforce_provider)  and self.providers_configured < 3:
             logger.error("强化Provider未配置")
             return None
             

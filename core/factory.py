@@ -217,12 +217,16 @@ class ServiceFactory(IServiceFactory):
             # 需要数据库管理器
             db_manager = self.create_database_manager()
             
+            # 获取好感度管理器（如果已创建）
+            affection_manager = self._service_cache.get("affection_manager")
+            
             service = IntelligentResponder(
                 self.config, 
                 self.context, 
                 db_manager, 
                 llm_adapter=self.create_framework_llm_adapter(), # 传递框架适配器
-                prompts=self.get_prompts() # 传递 prompts
+                prompts=self.get_prompts(), # 传递 prompts
+                affection_manager=affection_manager # 传递好感度管理器
             )
             self._service_cache[cache_key] = service
             

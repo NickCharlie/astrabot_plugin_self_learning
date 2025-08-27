@@ -572,14 +572,23 @@ class AffectionManager(AsyncServiceBase):
         compliment_keywords = [
             '好美', '漂亮', '可爱', '帅', '美丽', '好看', '美', '棒', '厉害', 
             '优秀', '聪明', '温柔', '体贴', '贴心', '善良', '完美', '很棒',
-            '真好', '不错', '赞', '给力', '牛', '强', '6', '666', '牛逼'
+            '真好', '不错', '赞', '给力', '牛', '强', '6', '666', '牛逼',
+            '好', '好的', '好啊', '好呀', '棒棒', '太棒了', '真棒', '真厉害',
+            '哇', '哇塞', '厉害了', '太好了', '好厉害', '好强', '好棒', '赞赞',
+            '牛牛', '牛b', 'nb', '牛批', '牛皮', '好牛', '超棒', '超好',
+            '很好', '很棒', '很厉害', '太厉害了', '好喜欢', '喜欢你', '爱了',
+            '太可爱了', '好可爱', '可爱爆了', '萌', '萌萌', '好萌'
         ]
         
         # 感谢词汇
-        thanks_keywords = ['谢谢', '感谢', '多谢', 'thank', '谢', 'thx']
+        thanks_keywords = ['谢谢', '感谢', '多谢', 'thank', '谢', 'thx', '谢啦', '谢了']
         
         # 问候词汇  
-        care_keywords = ['你好', '早上好', '晚上好', '怎么样', '最近好吗', 'hello', 'hi']
+        care_keywords = [
+            '你好', '早上好', '晚上好', '怎么样', '最近好吗', 'hello', 'hi',
+            '嗨', '哈喽', '哈罗', '安', '早', '晚安', '午安', '下午好',
+            '你在吗', '在吗', '你在不在', '在不在', '你好呀', '你好啊'
+        ]
         
         # 明确的负面词汇
         negative_keywords = [
@@ -1022,11 +1031,19 @@ class AffectionManager(AsyncServiceBase):
     async def process_message_interaction(self, group_id: str, user_id: str, message: str) -> Dict[str, Any]:
         """处理用户消息交互的主要入口方法"""
         try:
+            # 记录交互开始（用于调试）
+            self._logger.info(f"开始处理消息交互: group_id={group_id}, user_id={user_id[:8]}..., message_len={len(message)}")
+            
             # 1. 分析交互类型
             interaction_type = await self.analyze_interaction_type(group_id, user_id, message)
+            self._logger.info(f"交互类型分析结果: {interaction_type.value} (group: {group_id})")
             
             # 2. 更新好感度
             affection_result = await self.update_affection(group_id, user_id, interaction_type)
+            if affection_result.get('success'):
+                self._logger.info(f"好感度更新成功: 用户{user_id[:8]}... 在群{group_id} 的好感度从 {affection_result.get('previous_level', 0)} 变为 {affection_result.get('new_level', 0)} (变化: {affection_result.get('change', 0)})")
+            else:
+                self._logger.warning(f"好感度更新失败: {affection_result.get('reason', '未知原因')}")
             
             # 3. 获取更新后的情绪状态
             current_mood = await self.get_current_mood(group_id)
@@ -1045,7 +1062,7 @@ class AffectionManager(AsyncServiceBase):
             }
             
         except Exception as e:
-            self._logger.error(f"处理消息交互失败: {e}")
+            self._logger.error(f"处理消息交互失败: {e}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e),

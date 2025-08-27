@@ -55,7 +55,7 @@ class SelfLearningPlugin(star.Star):
                 # 回退到当前目录下的 data 目录
                 astrbot_data_path = os.path.join(os.path.dirname(__file__), "data")
                 logger.warning("无法获取 AstrBot 数据路径，使用插件目录下的 data 目录")
-            plugin_data_dir = os.path.join(astrbot_data_path, "plugins", "astrabot_plugin_self_learning")
+            plugin_data_dir = os.path.join(astrbot_data_path, "plugins", "astrbot_plugin_self_learning")
             
             logger.info(f"插件数据目录: {plugin_data_dir}")
             self.plugin_config = PluginConfig.create_from_config(self.config, data_dir=plugin_data_dir)
@@ -132,7 +132,6 @@ class SelfLearningPlugin(star.Star):
             self.style_analyzer = self.service_factory.create_style_analyzer()
             self.quality_monitor = self.service_factory.create_quality_monitor()
             self.progressive_learning = self.service_factory.create_progressive_learning()
-            self.intelligent_responder = self.service_factory.create_intelligent_responder()  # 重新启用智能回复器
             self.ml_analyzer = self.service_factory.create_ml_analyzer()
             self.persona_manager = self.service_factory.create_persona_manager()
             
@@ -146,6 +145,9 @@ class SelfLearningPlugin(star.Star):
             self.enhanced_interaction = component_factory.create_enhanced_interaction_service()
             self.intelligence_enhancement = component_factory.create_intelligence_enhancement_service()
             self.affection_manager = component_factory.create_affection_manager_service()
+            
+            # 在affection_manager创建后再创建智能回复器，这样可以传递affection_manager
+            self.intelligent_responder = self.service_factory.create_intelligent_responder()  # 重新启用智能回复器
             
             # 创建临时人格更新器
             self.temporary_persona_updater = self.service_factory.create_temporary_persona_updater()
@@ -337,6 +339,11 @@ class SelfLearningPlugin(star.Star):
         为特定群组实时更新system_prompt，集成所有可用的增量更新
         """
         try:
+            # 防止在强制学习过程中重复调用，避免无限循环
+            if hasattr(self, '_force_learning_in_progress') and group_id in self._force_learning_in_progress:
+                logger.debug(f"群组 {group_id} 正在进行强制学习，跳过实时system_prompt更新")
+                return True
+                
             # 收集当前群组的各种增量更新数据
             update_data = {}
             recent_messages = []  # 初始化变量
@@ -840,10 +847,21 @@ class SelfLearningPlugin(star.Star):
             group_id = event.get_group_id() or event.get_sender_id()
             yield event.plain_result(CommandMessages.FORCE_LEARNING_START.format(group_id=group_id))
             
-            # 直接调用 ProgressiveLearningService 的批处理方法
-            await self.progressive_learning._execute_learning_batch(group_id)
+            # 设置标志位防止无限循环
+            self._force_learning_in_progress = getattr(self, '_force_learning_in_progress', set())
+            if group_id in self._force_learning_in_progress:
+                yield event.plain_result(f"❌ 群组 {group_id} 的强制学习正在进行中，请等待完成")
+                return
+                
+            self._force_learning_in_progress.add(group_id)
             
-            yield event.plain_result(CommandMessages.FORCE_LEARNING_COMPLETE.format(group_id=group_id))
+            try:
+                # 直接调用 ProgressiveLearningService 的批处理方法
+                await self.progressive_learning._execute_learning_batch(group_id)
+                yield event.plain_result(CommandMessages.FORCE_LEARNING_COMPLETE.format(group_id=group_id))
+            finally:
+                # 无论成功失败都要清理标志位
+                self._force_learning_in_progress.discard(group_id)
             
         except Exception as e:
             logger.error(CommandMessages.ERROR_FORCE_LEARNING.format(error=e), exc_info=True)

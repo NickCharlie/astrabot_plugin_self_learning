@@ -101,7 +101,7 @@ class PluginConfig:
         
         # 确保 data_dir 不为空
         if not data_dir:
-            data_dir = "./data/plugins/astrabot_plugin_self_learning"
+            data_dir = "./data/plugins/astrbot_plugin_self_learning"
             logger.warning(f"data_dir 为空，使用默认值: {data_dir}")
         
         # 从配置中提取各个配置组

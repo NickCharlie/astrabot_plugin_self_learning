@@ -38,7 +38,7 @@ class LearningStats:
     last_persona_update: Optional[str] = None
 
 
-@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.2.4", "https://github.com/NickCharlie/astrbot_plugin_self_learning")
+@register("astrbot_plugin_self_learning", "NickMo", "智能自学习对话插件", "1.2.5", "https://github.com/NickCharlie/astrbot_plugin_self_learning")
 class SelfLearningPlugin(star.Star):
     """AstrBot 自学习插件 - 智能学习用户对话风格并优化人格设置"""
 
@@ -458,8 +458,31 @@ class SelfLearningPlugin(star.Star):
             logger.error(f"群组 {group_id} 实时更新system_prompt异常: {e}", exc_info=True)
             return False
 
+    def _is_astrbot_command(self, event: AstrMessageEvent) -> bool:
+        """
+        判断用户输入是否为AstrBot命令（包括插件命令和其他命令）
+        
+        融合了AstrBot框架的命令检测机制和插件特定的命令检测
+        
+        Args:
+            event: AstrBot消息事件
+            
+        Returns:
+            bool: True表示是命令，False表示是普通消息
+        """
+        # 1. 首先检查AstrBot框架的命令标识
+        if event.is_at_or_wake_command:
+            return True
+            
+        message_text = event.get_message_str()
+        if not message_text:
+            return False
+            
+        # 2. 检查是否为本插件的特定命令
+        return self._is_plugin_command(message_text)
+    
     def _is_plugin_command(self, message_text: str) -> bool:
-        """使用正则表达式检查消息是否为插件命令"""
+        """检查消息是否为本插件的命令"""
         if not message_text:
             return False
         
@@ -501,25 +524,36 @@ class SelfLearningPlugin(star.Star):
     async def on_message(self, event: AstrMessageEvent, priority = -6):
         """监听所有消息，收集用户对话数据"""
         
-        # 检查是否启用消息抓取
-        if not self.plugin_config.enable_message_capture:
-            return
-            
         try:
-            # 获取消息文本并立即检查是否为命令
+            # 获取消息文本
             message_text = event.get_message_str()
             if not message_text or len(message_text.strip()) == 0:
                 return
-            
-            # 过滤插件命令 - 在所有处理之前立即过滤
-            if self._is_plugin_command(message_text):
-                logger.debug(f"检测到插件命令，跳过消息收集: {message_text}")
-                return
-            
+                
             group_id = event.get_group_id() or event.get_sender_id() # 使用群组ID或发送者ID作为会话ID
             sender_id = event.get_sender_id()
             
-            # QQ号过滤
+            # 只对at消息和唤醒消息处理好感度（不包括插件命令）
+            if event.is_at_or_wake_command and self.plugin_config.enable_affection_system:
+                try:
+                    affection_result = await self.affection_manager.process_message_interaction(
+                        group_id, sender_id, message_text
+                    )
+                    if affection_result.get('success'):
+                        logger.debug(LogMessages.AFFECTION_PROCESSING_SUCCESS.format(result=affection_result))
+                except Exception as e:
+                    logger.error(LogMessages.AFFECTION_PROCESSING_FAILED.format(error=e))
+            
+            # 检查是否启用消息抓取 - 用于学习数据收集
+            if not self.plugin_config.enable_message_capture:
+                return
+            
+            # 使用融合的命令检测机制 - 过滤所有AstrBot命令（仅用于学习数据收集，不影响好感度）
+            if self._is_astrbot_command(event):
+                logger.debug(f"检测到AstrBot命令，跳过学习数据收集: {message_text}")
+                return
+            
+            # QQ号过滤（仅用于学习数据收集）
             if not self.qq_filter.should_collect_message(sender_id):
                 return
             
@@ -531,7 +565,7 @@ class SelfLearningPlugin(star.Star):
             # except Exception as e:
             #     logger.error(f"优先增量内容更新失败: {e}")
                 
-            # 收集消息
+            # 收集消息（用于学习）
             await self.message_collector.collect_message({
                 'sender_id': sender_id,
                 'sender_name': event.get_sender_name(),
@@ -542,17 +576,6 @@ class SelfLearningPlugin(star.Star):
             })
             
             self.learning_stats.total_messages_collected += 1
-            
-            # 处理好感度系统交互（如果启用）
-            if self.plugin_config.enable_affection_system:
-                try:
-                    affection_result = await self.affection_manager.process_message_interaction(
-                        group_id, sender_id, message_text
-                    )
-                    if affection_result.get('success'):
-                        logger.debug(LogMessages.AFFECTION_PROCESSING_SUCCESS.format(result=affection_result))
-                except Exception as e:
-                    logger.error(LogMessages.AFFECTION_PROCESSING_FAILED.format(error=e))
             
             # 处理增强交互（多轮对话管理）
             try:

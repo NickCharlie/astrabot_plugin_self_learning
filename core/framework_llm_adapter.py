@@ -65,7 +65,8 @@ class FrameworkLLMAdapter:
             return None
             
         try:
-            logger.debug(f"调用筛选Provider: {self.filter_provider.meta().id}")
+            if self.filter_provider:
+                logger.debug(f"调用筛选Provider: {self.filter_provider.meta().id}")
             response = await self.filter_provider.text_chat(
                 prompt=prompt,
                 contexts=contexts,
@@ -90,7 +91,8 @@ class FrameworkLLMAdapter:
             return None
             
         try:
-            logger.debug(f"调用提炼Provider: {self.refine_provider.meta().id}")
+            if self.refine_provider:
+                logger.debug(f"调用提炼Provider: {self.refine_provider.meta().id}")
             response = await self.refine_provider.text_chat(
                 prompt=prompt,
                 contexts=contexts,
@@ -115,7 +117,8 @@ class FrameworkLLMAdapter:
             return None
             
         try:
-            logger.debug(f"调用强化Provider: {self.reinforce_provider.meta().id}")
+            if self.reinforce_provider:
+                logger.debug(f"调用强化Provider: {self.reinforce_provider.meta().id}")
             response = await self.reinforce_provider.text_chat(
                 prompt=prompt,
                 contexts=contexts,
